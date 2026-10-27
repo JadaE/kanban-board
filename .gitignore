@@ -1,0 +1,38 @@
+# secrets / local config
+keys/
+.env*
+credentials*
+secret-config.json
+site-config.json
+.herenow/
+herenow/
+state.json
+*.jks
+*.keystore
+*.pem
+*.key
+# dependencies and build output
+node_modules/
+dist/
+dist-web/
+build/
+.expo/
+.gradle/
+android/app/build/
+app/android/
+app/ios/
+publish-site/
+/site/
+*.apk
+*.aab
+# logs, scratch, large media
+logs/
+*.log
+/screenshots/
+/screens/
+*.mp4
+*.mov
+*.zip
+.DS_Store
+screenshots/
+v0.02/test/results.json

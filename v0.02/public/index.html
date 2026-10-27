@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanban Board</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%E2%9C%A8%3C/text%3E%3C/svg%3E">
+<meta name="theme-color" content="#7c5cff">
+<style>
+:root{
+  --bg:#f5f3ff;--panel:#ffffff;--col:#eeebfb;--text:#1f1b2e;--muted:#6b6780;--border:#ddd8f0;
+  --accent:#7c5cff;--accent-2:#ff7ab6;--danger:#e5484d;--warn:#f5a524;--ok:#2fb67c;
+  --shadow:0 1px 2px rgba(30,20,60,.06),0 4px 14px rgba(30,20,60,.06);
+  --radius:14px;
+}
+[data-theme=dark]{
+  --bg:#14121c;--panel:#1f1c2b;--col:#191724;--text:#ece9f7;--muted:#9a95b2;--border:#2e2a40;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:20px;margin:0 8px 0 0;white-space:nowrap}
+h1 span{background:linear-gradient(90deg,var(--accent),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.grow{flex:1}
+.input,.btn,select{border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:7px 10px}
+.input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger{color:var(--danger)}
+.btn.icon{padding:7px 9px;line-height:1}
+#search{min-width:160px;flex:1;max-width:320px}
+#today{margin:12px 16px 0;padding:10px 14px;border-radius:var(--radius);background:var(--panel);border:1px solid var(--border);box-shadow:var(--shadow)}
+#today.has{border-color:color-mix(in srgb,var(--warn) 60%,var(--border))}
+#today .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+#today .pill{border:none;border-radius:999px;padding:3px 10px;font-size:13px;background:var(--col)}
+#today .pill.over{background:color-mix(in srgb,var(--danger) 18%,transparent);color:var(--danger)}
+#today .pill.tod{background:color-mix(in srgb,var(--warn) 22%,transparent);color:color-mix(in srgb,var(--warn) 70%,var(--text))}
+.board{display:grid;grid-template-columns:repeat(4,minmax(260px,1fr));gap:14px;padding:14px 16px 40px;overflow-x:auto;align-items:start}
+.column{background:var(--col);border:1px solid var(--border);border-radius:var(--radius);padding:10px;min-height:200px;display:flex;flex-direction:column;gap:8px}
+.column.over{outline:2px dashed var(--accent);outline-offset:-4px}
+.col-head{display:flex;align-items:center;gap:8px;font-weight:650;padding:2px 4px}
+.col-head .dot{width:10px;height:10px;border-radius:50%}
+.col-head .count{margin-left:auto;font-size:12px;color:var(--muted);background:var(--panel);border-radius:999px;padding:1px 8px;border:1px solid var(--border)}
+.quick{display:flex;gap:6px}
+.quick input{flex:1;min-width:0}
+.cards{display:flex;flex-direction:column;gap:8px;min-height:40px}
+.card{background:var(--panel);border:1px solid var(--border);border-left:4px solid var(--p,#999);border-radius:12px;padding:9px 10px;box-shadow:var(--shadow);cursor:grab;position:relative;user-select:none}
+.card:hover{border-color:var(--accent);border-left-color:var(--p)}
+.card.dragging{opacity:.4}
+.card.overdue{background:color-mix(in srgb,var(--danger) 9%,var(--panel));border-color:color-mix(in srgb,var(--danger) 55%,var(--border))}
+.card.duetoday{background:color-mix(in srgb,var(--warn) 11%,var(--panel));border-color:color-mix(in srgb,var(--warn) 60%,var(--border))}
+.card.done .title{text-decoration:line-through;color:var(--muted)}
+.card .title{font-weight:600;padding-right:28px;word-break:break-word}
+.card .notes{font-size:13px;color:var(--muted);margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap}
+.meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;align-items:center}
+.tag{font-size:11.5px;padding:2px 8px;border-radius:999px;color:#fff;font-weight:600;white-space:nowrap}
+.badge{font-size:11.5px;padding:2px 7px;border-radius:999px;background:var(--col);color:var(--muted);border:1px solid var(--border);white-space:nowrap}
+.badge.over{color:#fff;background:var(--danger);border-color:var(--danger)}
+.badge.tod{color:#3a2600;background:var(--warn);border-color:var(--warn)}
+.prog{height:5px;background:var(--col);border-radius:4px;margin-top:7px;overflow:hidden}
+.prog>i{display:block;height:100%;background:var(--ok)}
+.menu-btn{position:absolute;top:6px;right:6px;border:none;background:transparent;border-radius:8px;padding:2px 7px;color:var(--muted);font-size:18px;line-height:1}
+.menu-btn:hover{background:var(--col)}
+.menu{position:fixed;z-index:50;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.2);padding:6px;min-width:170px}
+.menu button{display:block;width:100%;text-align:left;border:none;background:none;padding:8px 10px;border-radius:8px}
+.menu button:hover{background:var(--col)}
+.menu hr{border:none;border-top:1px solid var(--border);margin:4px 0}
+.empty{font-size:13px;color:var(--muted);text-align:center;padding:10px}
+dialog{border:none;border-radius:18px;padding:0;background:var(--panel);color:var(--text);width:min(560px,94vw);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+dialog::backdrop{background:rgba(20,15,40,.45)}
+.dlg{padding:18px;display:flex;flex-direction:column;gap:12px;max-height:88vh;overflow:auto}
+.dlg label{font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em}
+.dlg .input,.dlg select,.dlg textarea{width:100%}
+textarea.input{min-height:80px;resize:vertical}
+.two{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.tagedit{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.tagedit .tag{display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 8px}
+.tagedit input[type=color]{width:18px;height:18px;padding:0;border:none;background:none;cursor:pointer}
+.tagedit .x{border:none;background:rgba(0,0,0,.2);color:#fff;border-radius:50%;width:16px;height:16px;font-size:11px;line-height:16px;padding:0}
+.check{display:flex;gap:8px;align-items:center;padding:3px 0}
+.check input[type=text]{flex:1}
+.check .x{border:none;background:none;color:var(--muted);font-size:16px}
+.actions{display:flex;gap:8px;align-items:center}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60}
+.toast.show{opacity:1}
+.conn{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:4px 10px;background:var(--panel);white-space:nowrap}
+.conn i{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
+.conn.live i{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 25%,transparent)}
+.conn.reconnecting i{background:var(--warn);animation:blink 1s infinite}
+.conn.offline i{background:var(--danger)}
+.conn.local{display:none}
+@keyframes blink{50%{opacity:.3}}
+#meBtn{border-radius:999px;padding:5px 12px;font-size:13px;white-space:nowrap}
+.edited{font-size:11px;color:var(--muted);opacity:.75;white-space:nowrap}
+#fEdited{font-size:12px;color:var(--muted)}
+#whoDlg{width:min(380px,92vw)}
+#whoDlg .who{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+#whoDlg .who button{font-size:20px;padding:22px 8px;border-radius:16px;border:2px solid var(--border);background:var(--col)}
+#whoDlg .who button:hover,#whoDlg .who button.on{border-color:var(--accent)}
+#clock{display:none;font-weight:650;font-variant-numeric:tabular-nums}
+/* ---------- TV mode (?tv=1): big, read-only friendly, no cursor ---------- */
+html.tv,html.tv body{font-size:22px;cursor:none!important}
+html.tv *{cursor:none!important}
+.tv header{position:static;padding:14px 28px;backdrop-filter:none}
+.tv h1{font-size:34px}
+.tv #clock{display:block;font-size:30px}
+.tv .quick,.tv .menu-btn,.tv #notifyBtn,.tv #exportBtn,.tv #importBtn,.tv #themeBtn,.tv #search,.tv #tagFilter,.tv #ownerFilter{display:none!important}
+.tv .conn{font-size:18px;padding:6px 14px}.tv .conn i{width:14px;height:14px}
+.tv .board{grid-template-columns:repeat(4,minmax(0,1fr));gap:22px;padding:18px 28px 28px;overflow:hidden}
+.tv .column{padding:14px;gap:12px;min-height:0}
+.tv .col-head{font-size:26px}.tv .col-head .count{font-size:18px}
+.tv .cards{gap:12px}
+.tv .card{padding:12px 14px;user-select:none}
+.tv .card .title{padding-right:0;font-size:24px}
+.tv .card .notes{font-size:18px;-webkit-line-clamp:2}
+.tv .tag,.tv .badge{font-size:16px;padding:3px 10px}
+.tv #today{margin:16px 28px 0;padding:14px 20px;font-size:22px}
+.tv #today .pill{font-size:18px}
+.tv .toast{font-size:20px}
+.tv #meBtn{display:none!important}
+.tv .edited{font-size:15px}.tv h1 .ver{font-size:15px}
+/* Pi 3 friendly: no animations, transitions, blur or shadows on the TV */
+html.tv *,html.tv *::before,html.tv *::after{animation:none!important;transition:none!important;backdrop-filter:none!important}
+.tv .card,.tv #today,.tv .column{box-shadow:none}
+h1 .ver{font-size:11px;font-weight:500;color:var(--muted);vertical-align:middle}
+/* Large screens / TV (e.g. Raspberry Pi on a 1080p or 4K TV): scale everything up for distance viewing */
+@media (min-width:1700px){html{font-size:17px}html,body{font-size:17px}.board{gap:20px;padding:18px 24px 40px}.card .notes{-webkit-line-clamp:3}}
+@media (min-width:2400px){html,body{font-size:24px}h1{font-size:32px}.tag,.badge{font-size:16px}.column{padding:16px;gap:12px}.cards{gap:12px}.card{padding:14px 16px}.board{gap:28px;padding:24px 32px 48px}#today{margin:18px 32px 0;padding:16px 20px}}
+@media (max-width:760px){
+  .board{grid-template-columns:repeat(4,85vw);scroll-snap-type:x mandatory}
+  .column{scroll-snap-align:start}
+  h1{font-size:18px}
+  .two{grid-template-columns:1fr 1fr}
+  #ownerFilter{max-width:120px}
+  .hide-sm{display:none}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>✨ <span>Kanban Board</span> <small class="ver">v0.02</small></h1>
+  <input id="search" class="input" type="search" placeholder="Search cards…" aria-label="Search">
+  <select id="tagFilter" aria-label="Filter by tag"><option value="">All tags</option></select>
+  <select id="ownerFilter" aria-label="Filter by owner"><option value="">Everyone</option><option value="persona">🌸 Person A</option><option value="personb">🧢 Person B</option><option value="both">💞 Both</option></select>
+  <span class="grow"></span>
+  <span id="clock" aria-hidden="true"></span>
+  <button class="btn" id="meBtn" title="Who is using this device? (tap to switch)">👤 Who?</button>
+  <span class="conn local" id="conn" role="status" title="Connection to the board server"><i></i><b>Local</b></span>
+  <button class="btn" id="notifyBtn" title="Browser reminders while this page is open">🔔 <span class="hide-sm">Reminders</span></button>
+  <button class="btn" id="exportBtn" title="Download a JSON backup">⬇ <span class="hide-sm">Export</span></button>
+  <button class="btn" id="importBtn" title="Load a JSON backup">⬆ <span class="hide-sm">Import</span></button>
+  <input id="importFile" type="file" accept="application/json,.json" hidden>
+  <button class="btn icon" id="themeBtn" title="Light / dark">🌙</button>
+</header>
+<section id="today" aria-live="polite"></section>
+<main class="board" id="board"></main>
+
+<dialog id="dlg">
+  <form class="dlg" id="form" method="dialog">
+    <div><label for="fTitle">Title</label><input id="fTitle" class="input" required></div>
+    <div><label for="fNotes">Notes</label><textarea id="fNotes" class="input"></textarea></div>
+    <div class="two">
+      <div><label for="fDue">Due date</label><input id="fDue" class="input" type="date"></div>
+      <div><label for="fPri">Priority</label><select id="fPri"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></div>
+      <div><label for="fCol">Column</label><select id="fCol"></select></div>
+      <div><label for="fOwner">Owner</label><select id="fOwner"><option value="">Unassigned</option><option value="persona">🌸 Person A</option><option value="personb">🧢 Person B</option><option value="both">💞 Both</option></select></div>
+    </div>
+    <div>
+      <label for="fTag">Tags</label>
+      <div class="quick"><input id="fTag" class="input" placeholder="Add a tag, press Enter" list="tagList"><button type="button" class="btn" id="fTagAdd">Add</button></div>
+      <datalist id="tagList"></datalist>
+      <div class="tagedit" id="fTags"></div>
+    </div>
+    <div>
+      <label>Checklist <span id="fProg"></span></label>
+      <div id="fChecks"></div>
+      <div class="quick" style="margin-top:6px"><input id="fCheckNew" class="input" placeholder="Add a subtask, press Enter"><button type="button" class="btn" id="fCheckAdd">Add</button></div>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn danger" id="fDelete">Delete</button>
+      <span class="grow" id="fEdited"></span>
+      <button type="button" class="btn" id="fCancel">Cancel</button>
+      <button type="submit" class="btn primary" id="fSave">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="whoDlg">
+  <form class="dlg" method="dialog">
+    <div style="font-size:20px;font-weight:700">Who are you?</div>
+    <div style="color:var(--muted);font-size:14px">This only sets who is using this phone or computer. New cards default to you, and edits show your name. No login, and you can switch anytime from the chip at the top.</div>
+    <div class="who"><button type="button" data-who="persona">🌸<br>Person A</button><button type="button" data-who="personb">🧢<br>Person B</button></div>
+  </form>
+</dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+const KEY='kanban-v1', NKEY='kanban-notified', APP_VERSION='0.02', SCHEMA=3;
+const QS=new URLSearchParams(location.search);
+const TV=QS.get('tv')==='1';
+/* ---------- Storage modules ----------
+   The app only uses Store.load / save / subscribe (plus a few optional extras below).
+   - LocalStore: v0.01 behaviour (this browser only). Used when the page is opened as a file:// or with ?local=1.
+   - ServerStore: the Raspberry Pi is the source of truth. Keeps a localStorage cache so the board opens even when
+     the Pi is unreachable, queues offline edits (also survives a reload) and replays them on reconnect,
+     and gets live changes through Server-Sent Events. Conflicts: per card, newest updatedAt wins; deletes are tombstones. */
+const LocalStore=(function(){
+  const subs=new Set();
+  function load(){try{const raw=localStorage.getItem(KEY);return raw?JSON.parse(raw):null;}catch(e){console.warn('Could not read saved board',e);return null;}}
+  function save(data){try{localStorage.setItem(KEY,JSON.stringify(data));return true;}catch(e){return false;}}
+  function subscribe(fn){subs.add(fn);return()=>subs.delete(fn);}
+  addEventListener('storage',e=>{if(e.key===KEY&&e.newValue){try{const d=JSON.parse(e.newValue);subs.forEach(f=>f(d));}catch(_){}}});
+  return {load,save,subscribe,kind:'localStorage',now:()=>Date.now(),theme:()=>'light',
+    onStatus(fn){fn({status:'local',pending:0});},start(){}};
+})();
+
+const ServerStore=(function(){
+  const CKEY='kanban-v2-cache',OKEY='kanban-v2-outbox',TKEY='kanban-v2-theme',SKEY='kanban-v2-skew';
+  const subs=new Set(),statusSubs=new Set();
+  const rj=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(_){return d;}};
+  const wj=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch(_){}};
+  const clone=o=>JSON.parse(JSON.stringify(o));
+  const stable=o=>JSON.stringify(o,(k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.keys(v).sort().reduce((a,x)=>(a[x]=v[x],a),{}):v);
+  let skew=+localStorage.getItem(SKEY)||0;               // server clock minus our clock
+  const now=()=>Math.round(Date.now()+skew);
+  const cache=rj(CKEY,null);
+  let cards=new Map((cache&&cache.cards||[]).map(c=>[c.id,c]));   // includes tombstones
+  let meta=cache&&cache.meta||{tagColors:{},updatedAt:0};
+  let hasData=!!cache;
+  let outbox=rj(OKEY,[]);
+  let theme=localStorage.getItem(TKEY)||((window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');
+  if(QS.get('theme'))theme=QS.get('theme');
+  let status='connecting',es=null,lastMsg=0,downSince=Date.now(),wasLiveOnce=false,flushing=false,retryT=null,reconnT=null,fails=0;
+  const api={kind:'server',now,theme:()=>theme,onFresh:null,who:null,normCard:null};
+  const norm=c=>{if(!c||c.deleted||typeof api.normCard!=='function')return c;try{return api.normCard(c)||c;}catch(_){return c;}};
+
+  function view(){return {schema:SCHEMA,cards:[...cards.values()].filter(c=>!c.deleted).map(clone),tagColors:clone(meta.tagColors||{}),theme};}
+  function emit(){const v=view();subs.forEach(f=>{try{f(v);}catch(e){console.warn(e);}});}
+  function persist(){wj(CKEY,{cards:[...cards.values()],meta,savedAt:Date.now()});wj(OKEY,outbox);}
+  function setStatus(s){status=s;const st={status,pending:outbox.length};statusSubs.forEach(f=>f(st));}
+  function enqueue(op){
+    if(op.op==='replace')outbox=[];
+    else if(op.id)outbox=outbox.filter(o=>o.id!==op.id);
+    else if(op.op==='meta')outbox=outbox.filter(o=>o.op!=='meta');
+    outbox.push(op);
+  }
+  /* Apply a server version of a card: it wins only if it is newer than what we hold. */
+  function applyRemote(card,emitNow){
+    card=norm(card);const cur=cards.get(card.id);
+    if(cur&&cur.updatedAt>card.updatedAt)return false;
+    if(cur&&stable(cur)===stable(card))return false;
+    cards.set(card.id,card);if(emitNow!==false){persist();emit();}return true;
+  }
+  function load(){return hasData?view():null;}
+  function save(data){
+    if(data.theme&&data.theme!==theme){theme=data.theme;try{localStorage.setItem(TKEY,theme);}catch(_){}}
+    const t=now(),seen=new Set();
+    for(const c of data.cards){
+      seen.add(c.id);const prev=cards.get(c.id);
+      if(prev&&!prev.deleted&&stable(prev)===stable(c))continue;
+      const card=clone(c);
+      if(prev&&!(card.updatedAt>prev.updatedAt))card.updatedAt=Math.max(t,prev.updatedAt+1);
+      cards.set(card.id,card);enqueue({op:'put',id:card.id,card});
+    }
+    for(const [id,c] of cards)if(!c.deleted&&!seen.has(id)){
+      const tomb={id,deleted:true,updatedAt:Math.max(t,c.updatedAt+1)};if(typeof api.who==='function'&&api.who())tomb.lastEditedBy=api.who();cards.set(id,tomb);enqueue({op:'del',id,updatedAt:tomb.updatedAt});}
+    if(stable(data.tagColors||{})!==stable(meta.tagColors||{})){meta={tagColors:clone(data.tagColors||{}),updatedAt:Math.max(t,meta.updatedAt+1)};enqueue({op:'meta',meta});}
+    hasData=true;persist();setStatus(status);flush();return true;
+  }
+  function replaceAll(data,ifFresh){
+    const t=now();
+    for(const [id,c] of cards)if(!c.deleted)cards.set(id,{id,deleted:true,updatedAt:t});
+    data.cards.forEach(c=>cards.set(c.id,norm(Object.assign(clone(c),{updatedAt:t}))));
+    meta={tagColors:clone(data.tagColors||{}),updatedAt:t};
+    enqueue({op:'replace',ifFresh:!!ifFresh,board:{cards:data.cards.map(clone),tagColors:meta.tagColors}});
+    hasData=true;persist();emit();setStatus(status);flush();
+  }
+  async function req(method,url,body){
+    const r=await fetch(url,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+    let j=null;try{j=await r.json();}catch(_){}
+    return {status:r.status,ok:r.ok,json:j};
+  }
+  async function sendOp(op){
+    let r;
+    if(op.op==='put')r=await req('PUT','api/card/'+encodeURIComponent(op.id),op.card);
+    else if(op.op==='del')r=await req('DELETE','api/card/'+encodeURIComponent(op.id),{updatedAt:op.updatedAt});
+    else if(op.op==='meta')r=await req('PUT','api/meta',op.meta);
+    else if(op.op==='replace')r=await req('PUT','api/board'+(op.ifFresh?'?ifFresh=1':''),op.board);
+    if(r.status>=500)throw new Error('server error '+r.status);
+    return r;
+  }
+  async function flush(){
+    if(flushing||!outbox.length)return;flushing=true;
+    try{
+      while(outbox.length){
+        const op=outbox[0];const r=await sendOp(op);
+        outbox=outbox.filter(o=>o!==op);
+        if(r.ok&&r.json){
+          if(op.op==='put'||op.op==='del'){if(r.json.card)applyRemote(r.json.card,false);}
+          else if(op.op==='meta'){if(r.json.updatedAt>=meta.updatedAt)meta={tagColors:r.json.tagColors,updatedAt:r.json.updatedAt};}
+          else if(op.op==='replace')loadBoard(r.json,false);
+        }else if(r.status===409){await refetch();}
+        else console.warn('Board server rejected a change',r.status,r.json);
+        persist();emit();setStatus(status);
+      }
+      fails=0;
+    }catch(e){
+      fails++;persist();setStatus(status==='live'?'reconnecting':status);
+      clearTimeout(retryT);retryT=setTimeout(flush,Math.min(30000,1000*2**Math.min(fails,5)));
+    }finally{flushing=false;}
+  }
+  /* Server copy + our not-yet-sent edits layered on top. */
+  function loadBoard(b,doEmit){
+    if(Number.isFinite(b.serverTime)){skew=b.serverTime-Date.now();try{localStorage.setItem(SKEY,String(skew));}catch(_){}}
+    const m=new Map(b.cards.map(c=>[c.id,norm(c)]));
+    let mm={tagColors:b.tagColors||{},updatedAt:b.metaUpdatedAt||0};
+    for(const op of outbox){
+      if(op.op==='replace'){m.clear();op.board.cards.forEach(c=>m.set(c.id,cards.get(c.id)||c));mm=meta;continue;}
+      const local=cards.get(op.id);
+      if((op.op==='put'||op.op==='del')&&local){const s=m.get(op.id);if(!s||local.updatedAt>s.updatedAt)m.set(op.id,local);}
+      if(op.op==='meta'&&op.meta.updatedAt>mm.updatedAt)mm=op.meta;
+    }
+    cards=m;meta=mm;hasData=true;persist();if(doEmit!==false)emit();
+    if(b.fresh&&!m.size&&!outbox.length&&typeof api.onFresh==='function'){const s=api.onFresh();if(s)replaceAll(s,true);}
+  }
+  async function refetch(){const r=await req('GET','api/board');if(r.ok&&r.json&&Array.isArray(r.json.cards))loadBoard(r.json);}
+  function connect(){
+    clearTimeout(reconnT);
+    if(es){try{es.close();}catch(_){}}
+    es=new EventSource('api/events');
+    es.addEventListener('hello',async e=>{
+      lastMsg=Date.now();fails=0;
+      try{const d=JSON.parse(e.data);if(Number.isFinite(d.serverTime)){skew=d.serverTime-Date.now();localStorage.setItem(SKEY,String(skew));}}catch(_){}
+      const downFor=Date.now()-downSince;
+      try{await flush();await refetch();}catch(_){scheduleReconnect();return;}
+      setStatus('live');
+      // TV safety: after a long outage, do a clean reload so the screen can't get stuck on stale code/state.
+      if(TV&&wasLiveOnce&&downFor>60000&&!outbox.length)location.reload();
+      wasLiveOnce=true;
+    });
+    es.addEventListener('card',e=>{lastMsg=Date.now();try{applyRemote(JSON.parse(e.data).card);}catch(_){}});
+    es.addEventListener('meta',e=>{lastMsg=Date.now();try{const d=JSON.parse(e.data);if(d.updatedAt>meta.updatedAt){meta={tagColors:d.tagColors,updatedAt:d.updatedAt};persist();emit();}}catch(_){}});
+    es.addEventListener('board',()=>{lastMsg=Date.now();refetch().catch(()=>{});});
+    es.addEventListener('ping',()=>{lastMsg=Date.now();});
+    es.onerror=()=>{
+      if(status==='live')downSince=Date.now();
+      setStatus(Date.now()-downSince>20000||navigator.onLine===false?'offline':'reconnecting');
+      if(es&&es.readyState===2)scheduleReconnect();   // browser gave up: we retry ourselves
+    };
+  }
+  function scheduleReconnect(){clearTimeout(reconnT);reconnT=setTimeout(connect,Math.min(15000,1000*2**Math.min(++fails,4)));}
+  /* Watchdog: if pings stop arriving, the connection is silently dead; rebuild it. */
+  setInterval(()=>{
+    if(status==='live'&&Date.now()-lastMsg>45000){downSince=Date.now();setStatus('reconnecting');connect();}
+    else if(status!=='live'&&status!=='connecting'&&Date.now()-downSince>20000&&status!=='offline')setStatus('offline');
+    if(outbox.length&&!flushing&&status==='live')flush();
+  },5000);
+  addEventListener('online',()=>{connect();flush();});
+  addEventListener('offline',()=>setStatus('offline'));
+  // TV safety: a periodic clean reload (default every 6 hours, ?reload=hours) when nothing is pending.
+  if(TV){const h=parseFloat(QS.get('reload')||'6');if(h>0)setInterval(()=>{if(!outbox.length&&status==='live')location.reload();},h*3600e3);}
+  Object.assign(api,{load,save,replaceAll,
+    subscribe(fn){subs.add(fn);return()=>subs.delete(fn);},
+    onStatus(fn){statusSubs.add(fn);fn({status,pending:outbox.length});},
+    start(){connect();},
+    debug:()=>({status,pending:outbox.length,outbox:clone(outbox),skew})});
+  return api;
+})();
+const Store=(/^https?:$/.test(location.protocol)&&QS.get('local')!=='1')?ServerStore:LocalStore;
+const now=()=>Store.now();
+const COLS=[
+  {id:'ideas',name:'💡 Ideas',color:'#a78bfa'},
+  {id:'todo',name:'📝 To Do',color:'#60a5fa'},
+  {id:'doing',name:'🚀 Doing',color:'#f59e0b'},
+  {id:'done',name:'✅ Done',color:'#34d399'}];
+const PRI={high:{c:'#e5484d',l:'High'},med:{c:'#f5a524',l:'Med'},low:{c:'#8b8ba7',l:'Low'}};
+const OWNERS={'':{l:'Unassigned'},persona:{l:'Person A',i:'🌸'},personb:{l:'Person B',i:'🧢'},both:{l:'Both',i:'💞'}};
+const MEKEY='kanban-me',PEOPLE={persona:'🌸 Person A',personb:'🧢 Person B'};
+const PALETTE=['#7c5cff','#ff6b9a','#14b8a6','#f97316','#3b82f6','#22c55e','#eab308','#a855f7','#ef4444','#0ea5e9'];
+const $=s=>document.querySelector(s);
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad=n=>String(n).padStart(2,'0');
+const todayStr=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());};
+
+let state=load();
+let filter={q:'',tag:'',owner:''};
+
+function seed(){
+  const T='side project';
+  const mk=(title,notes,col,pri)=>({id:uid(),title,notes,due:'',priority:pri,tags:[T],checklist:[],column:col,owner:'persona',createdAt:now(),updatedAt:now()});
+  const cards=[
+    mk('History visualizer','Map like Google Maps with a time slider, expert bots per region & millennium, and search.','ideas','med'),
+    mk('Bible study bots','Translate and compare many Bible versions plus the Blue Book.','ideas','med'),
+    mk('Game website','Host a game, maybe one I made.','ideas','low'),
+    mk('Cat health dashboard','Monitor my cats\u2019 health.','ideas','med'),
+    mk('Google Photos cleanup','Clear space in my 2 TB. Private, free alternative to picnic.photos.','ideas','high'),
+    mk('Step app','Help me actually get my steps in.','ideas','med'),
+    mk('Personal Kanban board (this one!)','A board to keep me on track and less forgetful.','doing','high'),
+    mk('3D social media color feed','Posts colored by sentiment or category (red = breaking news, black = purely negative).','ideas','low'),
+    mk('News bias radar','News coverage vs. facts.','ideas','low')];
+  cards.forEach((c,i)=>c.order=(i+1)*1024);
+  cards[6].checklist=[{id:uid(),text:'First version of the board',done:true},{id:uid(),text:'Use it daily for a week',done:false},{id:uid(),text:'Decide what to improve',done:false}];
+  return {schema:SCHEMA,cards,tagColors:{[T]:'#7c5cff'},theme:(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light'};
+}
+function load(){
+  const s=Store.load();if(s&&Array.isArray(s.cards))return normalize(s);
+  // Server mode: never seed locally (the server tells us if the shared board is brand new).
+  if(Store.kind==='server')return normalize({cards:[],tagColors:{},theme:Store.theme()});
+  const fresh=seed();Store.save(fresh);return fresh;
+}
+/* Owner values: 'husband' / 'Husband' from v0.01 data become 'personb'. */
+function ownerKey(o){o=String(o||'').trim().toLowerCase();if(o==='husband')o='personb';return OWNERS[o]?o:'';}
+/* Per-device identity ("Who are you?"): stored in this browser's localStorage only, never in board data. */
+function me(){const v=ownerKey(localStorage.getItem(MEKEY));return PEOPLE[v]?v:'';}
+function setMe(v){try{localStorage.setItem(MEKEY,v);}catch(_){}drawMe();}
+function drawMe(){const b=$('#meBtn');const m=me();b.textContent=m?PEOPLE[m]:'👤 Who?';b.title=m?`Using this device as ${OWNERS[m].l} (tap to switch)`:'Tell the board who you are';}
+function stamp(c){const m=me();if(m)c.lastEditedBy=m;return c;}
+function whoName(k){return k&&OWNERS[k]?OWNERS[k].l:'';}
+function ago(t){const d=Math.max(0,Date.now()-t)/1000;if(d<60)return 'just now';if(d<3600)return Math.round(d/60)+' min ago';if(d<86400)return Math.round(d/3600)+' h ago';return Math.round(d/86400)+' d ago';}
+function normalize(s){
+  s.tagColors=s.tagColors||{};s.theme=s.theme||'light';s.schema=SCHEMA;delete s.version;
+  s.cards=s.cards.filter(c=>c&&c.title&&!c.deleted).map((c,i)=>({id:c.id||uid(),title:String(c.title),notes:c.notes||'',due:c.due||'',priority:PRI[c.priority]?c.priority:'med',
+    tags:Array.isArray(c.tags)?c.tags.map(String):[],checklist:Array.isArray(c.checklist)?c.checklist.map(i=>({id:i.id||uid(),text:String(i.text||''),done:!!i.done})):[],
+    column:COLS.some(x=>x.id===c.column)?c.column:'ideas',owner:ownerKey(c.owner),
+    order:Number.isFinite(c.order)?c.order:(i+1)*1024,lastEditedBy:PEOPLE[ownerKey(c.lastEditedBy)]?ownerKey(c.lastEditedBy):'',
+    createdAt:c.createdAt||c.created||now(),updatedAt:c.updatedAt||c.updated||now()}));
+  return s;
+}
+function save(){if(!Store.save(state))toast('Could not save (storage full or blocked)');}
+function tagColor(t){if(!state.tagColors[t]){let h=0;for(const ch of t)h=(h*31+ch.charCodeAt(0))>>>0;state.tagColors[t]=PALETTE[h%PALETTE.length];}return state.tagColors[t];}
+function dueStatus(c){if(!c.due||c.column==='done')return '';const t=todayStr();return c.due<t?'over':c.due===t?'tod':'';}
+function fmtDue(d){const [y,m,dd]=d.split('-').map(Number);const dt=new Date(y,m-1,dd);const t=new Date();t.setHours(0,0,0,0);const diff=Math.round((dt-t)/864e5);
+  if(diff===0)return 'Today';if(diff===1)return 'Tomorrow';if(diff===-1)return 'Yesterday';if(diff<0)return -diff+'d overdue';
+  return dt.toLocaleDateString(undefined,{month:'short',day:'numeric',year:dt.getFullYear()!==t.getFullYear()?'numeric':undefined});}
+function matches(c){
+  if(filter.tag&&!c.tags.includes(filter.tag))return false;
+  if(filter.owner&&!(c.owner===filter.owner||(c.owner==='both'&&filter.owner!=='both')))return false;
+  if(filter.q){const q=filter.q.toLowerCase();const hay=(c.title+' '+c.notes+' '+c.tags.join(' ')+' '+c.checklist.map(i=>i.text).join(' ')).toLowerCase();if(!hay.includes(q))return false;}
+  return true;
+}
+function allTags(){const s=new Set();state.cards.forEach(c=>c.tags.forEach(t=>s.add(t)));return [...s].sort();}
+
+/* ---------- render ---------- */
+function colCards(col){return state.cards.filter(c=>c.column===col).sort((a,b)=>a.order-b.order||a.createdAt-b.createdAt);}
+function render(){
+  // Live updates can redraw at any moment: keep whatever is being typed in a quick-add box.
+  const ae=document.activeElement,qf=ae&&ae.closest&&ae.closest('[data-quick]');
+  const typed={};document.querySelectorAll('[data-quick] input').forEach(i=>{if(i.value)typed[i.closest('[data-quick]').dataset.quick]=i.value;});
+  const focusCol=qf?qf.dataset.quick:null,selStart=qf?ae.selectionStart:0;
+  document.documentElement.dataset.theme=state.theme;
+  $('#themeBtn').textContent=state.theme==='dark'?'☀️':'🌙';
+  const tags=allTags();
+  if(filter.tag&&!tags.includes(filter.tag))filter.tag='';
+  $('#tagFilter').innerHTML='<option value="">All tags</option>'+tags.map(t=>`<option ${t===filter.tag?'selected':''} value="${esc(t)}">${esc(t)}</option>`).join('');
+  $('#tagList').innerHTML=tags.map(t=>`<option value="${esc(t)}">`).join('');
+  const board=$('#board');
+  board.innerHTML=COLS.map(col=>{
+    const all=colCards(col.id);const vis=all.filter(matches);
+    return `<section class="column" data-col="${col.id}">
+      <div class="col-head"><span class="dot" style="background:${col.color}"></span>${col.name}<span class="count">${vis.length===all.length?all.length:vis.length+'/'+all.length}</span></div>
+      <form class="quick" data-quick="${col.id}"><input class="input" placeholder="Quick add…" aria-label="Quick add to ${esc(col.name)}"><button class="btn icon" title="Add">＋</button></form>
+      <div class="cards" data-col="${col.id}">${vis.map(cardHTML).join('')||`<div class="empty">${all.length?'No matches':'Nothing here yet'}</div>`}</div>
+    </section>`;}).join('');
+  for(const k in typed){const i=document.querySelector(`[data-quick="${k}"] input`);if(i)i.value=typed[k];}
+  if(focusCol){const i=document.querySelector(`[data-quick="${focusCol}"] input`);if(i){i.focus();try{i.setSelectionRange(selStart,selStart);}catch(_){}}}
+  renderToday();
+}
+function cardHTML(c){
+  const ds=dueStatus(c);const done=c.checklist.filter(i=>i.done).length,tot=c.checklist.length;
+  return `<article class="card ${ds==='over'?'overdue':ds==='tod'?'duetoday':''} ${c.column==='done'?'done':''}" draggable="${!TV}" data-id="${c.id}" style="--p:${PRI[c.priority].c}" tabindex="0">
+    <button class="menu-btn" data-menu="${c.id}" aria-label="Card actions" title="Move / actions">⋯</button>
+    <div class="title">${esc(c.title)}</div>
+    ${c.notes?`<div class="notes">${esc(c.notes)}</div>`:''}
+    <div class="meta">
+      <span class="badge" style="color:${PRI[c.priority].c};border-color:${PRI[c.priority].c}">${PRI[c.priority].l}</span>
+      ${c.owner?`<span class="badge" title="Owner">${OWNERS[c.owner].i} ${OWNERS[c.owner].l}</span>`:''}
+      ${c.due?`<span class="badge ${ds}">📅 ${esc(fmtDue(c.due))}</span>`:''}
+      ${tot?`<span class="badge">☑ ${done}/${tot}</span>`:''}
+      ${c.tags.map(t=>`<span class="tag" style="background:${tagColor(t)}">${esc(t)}</span>`).join('')}
+      ${c.lastEditedBy?`<span class="edited" title="Last edited by ${esc(whoName(c.lastEditedBy))} · ${esc(ago(c.updatedAt))}">✎ ${esc(whoName(c.lastEditedBy))}</span>`:''}
+    </div>
+    ${tot?`<div class="prog"><i style="width:${Math.round(done/tot*100)}%"></i></div>`:''}
+  </article>`;
+}
+function renderToday(){
+  const over=state.cards.filter(c=>dueStatus(c)==='over').sort((a,b)=>a.due.localeCompare(b.due));
+  const tod=state.cards.filter(c=>dueStatus(c)==='tod');
+  const el=$('#today');el.classList.toggle('has',!!(over.length||tod.length));
+  const d=new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
+  const doing=state.cards.filter(c=>c.column==='doing').length;
+  if(!over.length&&!tod.length){el.innerHTML=`<b>☀️ ${esc(d)}</b> — nothing overdue or due today. ${doing?`You have ${doing} card${doing>1?'s':''} in progress.`:''}`;return;}
+  el.innerHTML=`<b>☀️ ${esc(d)}</b> — ${over.length?`<b style="color:var(--danger)">${over.length} overdue</b>`:''}${over.length&&tod.length?', ':''}${tod.length?`<b>${tod.length} due today</b>`:''}
+   <div class="row">${over.map(c=>`<button class="pill over" data-open="${c.id}">⚠ ${esc(c.title)} · ${esc(fmtDue(c.due))}</button>`).join('')}${tod.map(c=>`<button class="pill tod" data-open="${c.id}">⏰ ${esc(c.title)}</button>`).join('')}</div>`;
+}
+
+/* ---------- card ops ---------- */
+const byId=id=>state.cards.find(c=>c.id===id);
+function addCard(col,title){title=title.trim();if(!title)return;
+  const tags=filter.tag?[filter.tag]:[];
+  state.cards.push(stamp({id:uid(),title,notes:'',due:'',priority:'med',tags,checklist:[],column:col,owner:filter.owner||me()||'',order:endOrder(col),createdAt:now(),updatedAt:now()}));save();render();
+  const inp=document.querySelector(`[data-quick="${col}"] input`);if(inp)inp.focus();}
+function endOrder(col,except){const l=colCards(col).filter(x=>x.id!==except);return l.length?l[l.length-1].order+1024:1024;}
+/* Cards carry a numeric "order"; moving a card only changes that one card, so live sync stays per card. */
+function moveCard(id,col,beforeId){
+  const c=byId(id);if(!c)return;
+  const list=colCards(col).filter(x=>x.id!==id);
+  const bi=beforeId?list.findIndex(x=>x.id===beforeId):-1;
+  let order;
+  if(bi<0)order=list.length?list[list.length-1].order+1024:1024;
+  else{const hi=list[bi].order,lo=bi>0?list[bi-1].order:hi-2048;order=(lo+hi)/2;
+    if(!(hi-lo>1e-6)){list.forEach((x,j)=>{x.order=(j+1)*1024;x.updatedAt=now();});order=list[bi].order-512;}}
+  c.column=col;c.order=order;c.updatedAt=now();stamp(c);save();render();
+}
+function deleteCard(id){const c=byId(id);if(!c)return false;if(!confirm(`Delete “${c.title}”? This can’t be undone.`))return false;
+  state.cards=state.cards.filter(x=>x.id!==id);save();render();toast('Card deleted');return true;}
+
+/* ---------- editor ---------- */
+let editing=null,draft=null;
+function openEditor(id,col){
+  editing=id||null;const c=id?byId(id):null;
+  draft=c?JSON.parse(JSON.stringify(c)):{id:uid(),title:'',notes:'',due:'',priority:'med',tags:filter.tag?[filter.tag]:[],checklist:[],column:col||'todo',owner:filter.owner||me()||''};
+  $('#fTitle').value=draft.title;$('#fNotes').value=draft.notes;$('#fDue').value=draft.due;$('#fPri').value=draft.priority;$('#fOwner').value=draft.owner||'';
+  $('#fCol').innerHTML=COLS.map(x=>`<option value="${x.id}">${x.name}</option>`).join('');$('#fCol').value=draft.column;
+  $('#fDelete').style.display=c?'':'none';
+  $('#fEdited').textContent=c&&c.lastEditedBy?`Last edited by ${whoName(c.lastEditedBy)}, ${ago(c.updatedAt)}`:'';
+  drawTags();drawChecks();$('#dlg').showModal();$('#fTitle').focus();
+}
+function drawTags(){$('#fTags').innerHTML=draft.tags.map((t,i)=>`<span class="tag" style="background:${tagColor(t)}">${esc(t)}<input type="color" value="${tagColor(t)}" data-tagcolor="${i}" title="Tag color"><button type="button" class="x" data-tagdel="${i}" aria-label="Remove tag">×</button></span>`).join('');}
+function drawChecks(){
+  const d=draft.checklist.filter(i=>i.done).length;$('#fProg').textContent=draft.checklist.length?`(${d}/${draft.checklist.length})`:'';
+  $('#fChecks').innerHTML=draft.checklist.map((it,i)=>`<div class="check"><input type="checkbox" data-ck="${i}" ${it.done?'checked':''}><input type="text" class="input" data-ct="${i}" value="${esc(it.text)}"><button type="button" class="x" data-cdel="${i}" aria-label="Remove">✕</button></div>`).join('');}
+function addTagFromInput(){const v=$('#fTag').value.trim().replace(/,+$/,'');if(v&&!draft.tags.includes(v)){draft.tags.push(v);tagColor(v);}$('#fTag').value='';drawTags();}
+function addCheckFromInput(){const v=$('#fCheckNew').value.trim();if(v)draft.checklist.push({id:uid(),text:v,done:false});$('#fCheckNew').value='';drawChecks();$('#fCheckNew').focus();}
+$('#fTagAdd').onclick=addTagFromInput;$('#fCheckAdd').onclick=addCheckFromInput;
+$('#fTag').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===','){e.preventDefault();addTagFromInput();}});
+$('#fCheckNew').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addCheckFromInput();}});
+$('#fTags').addEventListener('click',e=>{const d=e.target.dataset.tagdel;if(d!=null){draft.tags.splice(+d,1);drawTags();}});
+$('#fTags').addEventListener('input',e=>{const i=e.target.dataset.tagcolor;if(i!=null){state.tagColors[draft.tags[+i]]=e.target.value;e.target.parentElement.style.background=e.target.value;}});
+$('#fChecks').addEventListener('change',e=>{const i=e.target.dataset.ck;if(i!=null){draft.checklist[+i].done=e.target.checked;drawChecks();}});
+$('#fChecks').addEventListener('input',e=>{const i=e.target.dataset.ct;if(i!=null)draft.checklist[+i].text=e.target.value;});
+$('#fChecks').addEventListener('click',e=>{const i=e.target.dataset.cdel;if(i!=null){draft.checklist.splice(+i,1);drawChecks();}});
+$('#form').addEventListener('submit',e=>{e.preventDefault();
+  const title=$('#fTitle').value.trim();if(!title){$('#fTitle').focus();return;}
+  if($('#fTag').value.trim())addTagFromInput();
+  Object.assign(draft,{title,notes:$('#fNotes').value,due:$('#fDue').value,priority:$('#fPri').value,owner:$('#fOwner').value,updatedAt:now()});stamp(draft);
+  draft.checklist=draft.checklist.filter(i=>i.text.trim());
+  const newCol=$('#fCol').value;
+  if(editing&&!byId(editing)){toast('That card was deleted on another device; saved it as a new card');editing=null;}
+  if(editing){const c=byId(editing);const colChanged=c.column!==newCol;Object.assign(c,draft);if(colChanged){moveCard(c.id,newCol);}else{save();render();}}
+  else{draft.column=newCol;draft.createdAt=now();draft.order=endOrder(newCol,draft.id);state.cards.push(draft);save();render();}
+  $('#dlg').close();toast('Saved');});
+$('#fCancel').onclick=()=>{$('#dlg').close();save();render();};
+$('#fDelete').onclick=()=>{if(editing&&deleteCard(editing))$('#dlg').close();};
+
+/* ---------- action menu (touch-friendly move) ---------- */
+let menuEl=null;
+function closeMenu(){if(menuEl){menuEl.remove();menuEl=null;}}
+function openMenu(id,anchor){
+  closeMenu();const c=byId(id);if(!c)return;
+  menuEl=document.createElement('div');menuEl.className='menu';menuEl.setAttribute('role','menu');
+  menuEl.innerHTML=COLS.filter(x=>x.id!==c.column).map(x=>`<button data-mv="${x.id}">Move to ${x.name}</button>`).join('')+
+    `<hr><button data-act="up">⬆ Move up</button><button data-act="down">⬇ Move down</button><hr><button data-act="edit">✏️ Edit</button><button data-act="del" style="color:var(--danger)">🗑 Delete</button>`;
+  document.body.appendChild(menuEl);
+  const r=anchor.getBoundingClientRect(),mw=menuEl.offsetWidth,mh=menuEl.offsetHeight;
+  menuEl.style.left=Math.max(8,Math.min(innerWidth-mw-8,r.right-mw))+'px';
+  menuEl.style.top=(r.bottom+mh+8>innerHeight?Math.max(8,r.top-mh-4):r.bottom+4)+'px';
+  menuEl.onclick=e=>{const b=e.target.closest('button');if(!b)return;closeMenu();
+    if(b.dataset.mv){moveCard(id,b.dataset.mv);toast('Moved to '+COLS.find(x=>x.id===b.dataset.mv).name);}
+    else if(b.dataset.act==='edit')openEditor(id);
+    else if(b.dataset.act==='del')deleteCard(id);
+    else{const same=colCards(c.column);const i=same.indexOf(c);
+      if(b.dataset.act==='up'&&i>0)moveCard(id,c.column,same[i-1].id);
+      if(b.dataset.act==='down'&&i<same.length-1)moveCard(id,c.column,same[i+2]?same[i+2].id:null);}
+  };
+}
+document.addEventListener('click',e=>{if(menuEl&&!menuEl.contains(e.target)&&!e.target.closest('[data-menu]'))closeMenu();});
+addEventListener('scroll',closeMenu,true);addEventListener('resize',closeMenu);
+
+/* ---------- board events ---------- */
+const board=$('#board');
+board.addEventListener('submit',e=>{const f=e.target.closest('[data-quick]');if(f){e.preventDefault();addCard(f.dataset.quick,f.querySelector('input').value);}});
+board.addEventListener('click',e=>{
+  const m=e.target.closest('[data-menu]');if(m){e.stopPropagation();menuEl&&menuEl.dataset.for===m.dataset.menu?closeMenu():(openMenu(m.dataset.menu,m),menuEl.dataset.for=m.dataset.menu);return;}
+  const card=e.target.closest('.card');if(card&&!TV)openEditor(card.dataset.id);});
+board.addEventListener('keydown',e=>{if(!TV&&e.key==='Enter'&&e.target.classList.contains('card'))openEditor(e.target.dataset.id);});
+$('#today').addEventListener('click',e=>{const b=e.target.closest('[data-open]');if(b)openEditor(b.dataset.open);});
+
+/* drag & drop (mouse / desktop) */
+let dragId=null;
+board.addEventListener('dragstart',e=>{if(TV)return;const c=e.target.closest('.card');if(!c)return;dragId=c.dataset.id;c.classList.add('dragging');e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',dragId);}catch(_){}closeMenu();});
+board.addEventListener('dragend',()=>{dragId=null;document.querySelectorAll('.dragging,.column.over').forEach(x=>x.classList.remove('dragging','over'));});
+function beforeCardAt(list,y){const cs=[...list.querySelectorAll('.card:not(.dragging)')];for(const c of cs){const r=c.getBoundingClientRect();if(y<r.top+r.height/2)return c.dataset.id;}return null;}
+board.addEventListener('dragover',e=>{const col=e.target.closest('.column');if(!col||!dragId)return;e.preventDefault();e.dataTransfer.dropEffect='move';
+  document.querySelectorAll('.column.over').forEach(x=>x!==col&&x.classList.remove('over'));col.classList.add('over');});
+board.addEventListener('drop',e=>{const col=e.target.closest('.column');if(!col||!dragId)return;e.preventDefault();
+  const id=dragId;const before=beforeCardAt(col.querySelector('.cards'),e.clientY);dragId=null;moveCard(id,col.dataset.col,before===id?null:before);});
+
+/* ---------- header ---------- */
+$('#search').addEventListener('input',e=>{filter.q=e.target.value.trim();render();});
+$('#tagFilter').addEventListener('change',e=>{filter.tag=e.target.value;render();});
+$('#ownerFilter').addEventListener('change',e=>{filter.owner=e.target.value;render();});
+$('#themeBtn').onclick=()=>{state.theme=state.theme==='dark'?'light':'dark';save();render();};
+$('#exportBtn').onclick=()=>{
+  const blob=new Blob([JSON.stringify({...state,exportedAt:new Date().toISOString()},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`kanban-board-${todayStr()}.json`;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);toast('Backup downloaded');};
+$('#importBtn').onclick=()=>$('#importFile').click();
+$('#importFile').addEventListener('change',async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{const data=JSON.parse(await f.text());if(!data||!Array.isArray(data.cards))throw new Error('No cards found in file');
+    if(!confirm(`Replace your current board (${state.cards.length} cards) with this backup (${data.cards.length} cards)?`))return;
+    delete data.exportedAt;data.theme=state.theme;state=normalize(data);if(Store.replaceAll)Store.replaceAll(state);else save();render();toast('Board imported');}
+  catch(err){alert('Could not import that file: '+err.message);}});
+
+/* ---------- reminders ---------- */
+function notifyBtnLabel(){const b=$('#notifyBtn');if(!('Notification' in window)){b.style.display='none';return;}
+  b.title=Notification.permission==='granted'?'Reminders on (while this page is open)':Notification.permission==='denied'?'Notifications are blocked in your browser settings':'Turn on browser reminders';
+  b.style.borderColor=Notification.permission==='granted'?'var(--ok)':'';}
+$('#notifyBtn').onclick=async()=>{if(!('Notification' in window))return;
+  if(Notification.permission==='granted'){checkReminders(true);toast('Reminders are on ✓');return;}
+  if(Notification.permission==='denied'){alert('Notifications are blocked for this page. Enable them in your browser\u2019s site settings.');return;}
+  const p=await Notification.requestPermission();notifyBtnLabel();if(p==='granted'){toast('Reminders on');checkReminders(true);}};
+function checkReminders(force){
+  renderTodayIfDateChanged();
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  let sent={};try{sent=JSON.parse(localStorage.getItem(NKEY)||'{}');}catch(_){}
+  const t=todayStr();if(sent._day!==t)sent={_day:t};
+  const due=state.cards.filter(c=>dueStatus(c)&&(force||!sent[c.id]));
+  due.forEach(c=>{try{new Notification(dueStatus(c)==='over'?'⚠ Overdue: '+c.title:'⏰ Due today: '+c.title,{body:c.notes?c.notes.slice(0,120):'Open your board to check it off.',tag:'kanban-'+c.id});}catch(_){}sent[c.id]=1;});
+  try{localStorage.setItem(NKEY,JSON.stringify(sent));}catch(_){}
+}
+let lastDay=todayStr();
+function renderTodayIfDateChanged(){if(todayStr()!==lastDay){lastDay=todayStr();render();}}
+setInterval(checkReminders,60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)renderTodayIfDateChanged();});
+
+/* live updates: other tabs (local mode) or other devices via the Pi (server mode) */
+Store.subscribe(data=>{if(data&&Array.isArray(data.cards)){state=normalize(data);render();}});
+Store.onStatus(st=>{const el=$('#conn');el.className='conn '+st.status;
+  const label={live:'Live',reconnecting:'Reconnecting…',offline:'Offline',connecting:'Connecting…',local:'Local'}[st.status]||st.status;
+  el.querySelector('b').textContent=label+(st.pending?` · ${st.pending} waiting`:'');
+  el.title={live:'Connected to the board server. Changes sync instantly.',reconnecting:'Lost the server, trying again. Your edits are saved here and will sync.',
+    offline:'Can\u2019t reach the board server. You can keep working; edits will sync when it\u2019s back.',connecting:'Connecting to the board server…',local:'Saved in this browser only'}[st.status]||'';});
+if(Store.onFresh!==undefined)Store.onFresh=()=>seed();
+Store.who=me;
+Store.normCard=c=>{const o=c.order;const r=normalize({cards:[c]}).cards[0];if(r&&!Number.isFinite(o))r.order=1024;return r;};
+if(Store.kind==='server'){const v=Store.load();if(v){state=normalize(v);}}
+$('#meBtn').onclick=()=>{const d=$('#whoDlg');d.querySelectorAll('[data-who]').forEach(b=>b.classList.toggle('on',b.dataset.who===me()));d.showModal();};
+$('#whoDlg').addEventListener('click',e=>{const b=e.target.closest('[data-who]');if(!b)return;setMe(b.dataset.who);$('#whoDlg').close();toast('Hi '+OWNERS[b.dataset.who].l+'! New cards will be yours.');});
+$('#whoDlg').addEventListener('cancel',e=>{if(!me())e.preventDefault();});
+if('serviceWorker' in navigator&&window.isSecureContext&&Store.kind==='server')navigator.serviceWorker.register('sw.js').catch(e=>console.warn('offline cache unavailable',e));
+
+let tt;function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),1800);}
+addEventListener('keydown',e=>{if(e.key==='Escape')closeMenu();if(e.key==='/'&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)&&!$('#dlg').open){e.preventDefault();$('#search').focus();}});
+
+if(TV){document.documentElement.classList.add('tv');const tick=()=>{$('#clock').textContent=new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});};tick();setInterval(tick,10000);}
+drawMe();render();notifyBtnLabel();if(!TV)checkReminders();Store.start();
+if(!TV&&!me())$('#whoDlg').showModal();
+window.__kanban={get state(){return state;},store:Store};
+})();
+</script>
+</body>
+</html>
