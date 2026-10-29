@@ -1,5 +1,7 @@
 # Kanban Board
 
+> 🤖 This project was created by [Grok Bot](https://cursor.com) from Cursor.
+
 A shared, offline-tolerant Kanban board for two people. A small Node server (`v0.02/server.js`, no dependencies) holds the board and pushes live updates to every open screen; the front end is a single static page (`v0.02/public/index.html`) with a service worker, plus a TV mode (`?tv=1`) for a wall display. `v0.02/pi/` has install, kiosk and watchdog scripts for a Raspberry Pi.
 
 ## Run
