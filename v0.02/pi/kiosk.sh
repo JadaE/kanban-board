@@ -8,10 +8,21 @@ flock -n 9 || exit 0   # already running (several autostart hooks point here)
 
 PORT=8080
 KIOSK_URL=""
-# shellcheck disable=SC1091
-[ -r /etc/kanban.env ] && . /etc/kanban.env
+HOST_BIND=""
+# Read only the TV settings. Do not source the env file: it holds the board token.
+if [ -r /etc/kanban.env ]; then
+  file_port="$(awk -F= '$1=="PORT"{print substr($0, index($0, "=") + 1); exit}' /etc/kanban.env)"
+  file_url="$(awk -F= '$1=="KIOSK_URL"{print substr($0, index($0, "=") + 1); exit}' /etc/kanban.env)"
+  file_host="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' /etc/kanban.env)"
+  [ -n "$file_port" ] && PORT="$file_port"
+  [ -n "$file_url" ] && KIOSK_URL="$file_url"
+  [ -n "$file_host" ] && HOST_BIND="$file_host"
+fi
 URL="${KIOSK_URL:-http://localhost:$PORT/?tv=1}"
-HEALTH="http://localhost:$PORT/healthz"
+case "$HOST_BIND" in
+  ''|0.0.0.0|127.0.0.1|localhost|::|::1) HEALTH="http://127.0.0.1:$PORT/healthz" ;;
+  *) HEALTH="http://$HOST_BIND:$PORT/healthz" ;;
+esac
 PROFILE="$HOME/.config/kanban-kiosk"
 LOG="$HOME/.cache/kanban-kiosk.log"
 mkdir -p "$PROFILE" "$(dirname "$LOG")"
@@ -20,9 +31,14 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 BROWSER="$(command -v chromium-browser || command -v chromium || true)"
 [ -n "$BROWSER" ] || { log "Chromium not found"; exit 1; }
 
-# Wait for the board server on this Pi. It only needs localhost, so this works the same with Ethernet,
-# Wi-Fi, or no network at all. (If it's still not up after 2 minutes we open anyway; the page retries.)
-for _ in $(seq 1 120); do curl -fsS -m 2 "$HEALTH" >/dev/null 2>&1 && break; sleep 1; done
+# Wait until the board process answers. A 401 still means it is up: the TV browser
+# signs in at /login, and this script does not read the token.
+# (If it is still not up after 2 minutes we open anyway; the page retries.)
+for _ in $(seq 1 120); do
+  code="$(curl -sS -m 2 -o /dev/null -w '%{http_code}' "$HEALTH" 2>/dev/null || true)"
+  [ "$code" = "200" ] || [ "$code" = "401" ] && break
+  sleep 1
+done
 
 if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -n "${DISPLAY:-}" ]; then
   # X11: no screensaver, no power-saving blanking, hide the mouse

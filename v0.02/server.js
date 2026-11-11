@@ -5,18 +5,27 @@
    - JSON API: GET /api/board, PUT /api/card/:id, DELETE /api/card/:id, PUT /api/board, PUT /api/meta
    - GET /api/events: Server-Sent Events (live updates + heartbeat pings)
    - GET /healthz
+   - GET/POST /login: sets an HttpOnly cookie so the browser (and SSE) can authenticate
    Conflicts are settled per card: the newest updatedAt wins. Deletes are tombstones.
-   Config (env): PORT=8080 HOST=0.0.0.0 DATA_DIR=./data BACKUPS=30 BACKUP_MIN_INTERVAL_S=300
-                 TOMBSTONE_DAYS=60 PING_S=15 */
+   Config (env): PORT=8080 HOST=127.0.0.1 DATA_DIR=./data BACKUPS=30 BACKUP_MIN_INTERVAL_S=300
+                 TOMBSTONE_DAYS=60 PING_S=15
+                 AUTH_TOKEN (required; KANBAN_TOKEN is accepted as another name)
+   Every route except /login requires the token via Authorization: Bearer or the
+   kanban_token cookie. The process refuses to listen if that token is unset.
+   Do not pass the token in a query string. */
 'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const VERSION = '0.02';
 const SCHEMA = 3;
 const PORT = parseInt(process.env.PORT || '8080', 10);
-const HOST = process.env.HOST || '0.0.0.0';
+const DEFAULT_HOST = '127.0.0.1';
+const HOST = process.env.HOST || DEFAULT_HOST;
+const MAX_TOKEN_CHARS = 256;
+const LOGIN_BODY_MAX = 4096;
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || path.join(__dirname, 'public'));
 const BACKUPS = Math.max(0, parseInt(process.env.BACKUPS || '30', 10));
@@ -28,6 +37,70 @@ const BOARD_FILE = path.join(DATA_DIR, 'board.json');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+/* Shared secret. Read at startup in main(); empty means fail closed. */
+let expectedToken = '';
+
+/* First non-empty AUTH_TOKEN, otherwise KANBAN_TOKEN. Whitespace-only is empty. */
+function configuredToken() {
+  for (const key of ['AUTH_TOKEN', 'KANBAN_TOKEN']) {
+    const value = process.env[key];
+    if (typeof value === 'string' && value.length > 0 && value.trim().length > 0) return value;
+  }
+  return '';
+}
+
+/* Constant-time compare of SHA-256 digests. Over-long or empty input returns
+   false before hashing so a huge header cannot throw or burn CPU as a 500. */
+function safeEqual(presented, expected) {
+  if (typeof presented !== 'string' || typeof expected !== 'string') return false;
+  if (presented.length === 0 || presented.length > MAX_TOKEN_CHARS) return false;
+  if (expected.length === 0 || expected.length > MAX_TOKEN_CHARS) return false;
+  const left = crypto.createHash('sha256').update(presented, 'utf8').digest();
+  const right = crypto.createHash('sha256').update(expected, 'utf8').digest();
+  return crypto.timingSafeEqual(left, right);
+}
+
+function loginCookie(token, secure) {
+  const parts = [
+    'kanban_token=' + encodeURIComponent(token),
+    'HttpOnly',
+    'SameSite=Strict',
+    'Path=/',
+    'Max-Age=31536000'
+  ];
+  if (secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+function cookieValue(header, name) {
+  if (typeof header !== 'string' || header.length === 0) return '';
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    let val = part.slice(eq + 1).trim();
+    if (val.length >= 2 && val.charCodeAt(0) === 34 && val.charCodeAt(val.length - 1) === 34) val = val.slice(1, -1);
+    try { return decodeURIComponent(val); } catch (_) { return val; }
+  }
+  return '';
+}
+
+/* null when the Authorization header is absent. A present but unusable header is ''. */
+function bearerValue(header) {
+  if (typeof header !== 'string' || header.length === 0) return null;
+  if (header.length > MAX_TOKEN_CHARS + 64) return header.slice(0, MAX_TOKEN_CHARS + 1);
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header.trim());
+  return match ? match[1] : '';
+}
+
+function requestAuthorized(req) {
+  const fromHeader = bearerValue(req.headers.authorization);
+  if (fromHeader != null && safeEqual(fromHeader, expectedToken)) return true;
+  const fromCookie = cookieValue(req.headers.cookie, 'kanban_token');
+  if (!fromCookie) return false;
+  return safeEqual(fromCookie, expectedToken);
+}
 
 /* ---------- storage ---------- */
 let board = null;      // {schema, rev, fresh, cards:[...incl. tombstones], tagColors, metaUpdatedAt}
@@ -119,14 +192,20 @@ function bump() { board.rev++; board.fresh = false; }
 const clients = new Set();
 function sse(res, event, data) { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'); }
 function broadcast(event, data) { for (const res of clients) { try { sse(res, event, data); } catch (_) {} } }
-setInterval(() => broadcast('ping', { t: Date.now(), rev: board ? board.rev : 0 }), PING_MS).unref();
-setInterval(() => { if (pruneTombstones()) { bump(); persist(); } }, 6 * 3600e3).unref();
+function startHousekeeping() {
+  setInterval(() => broadcast('ping', { t: Date.now(), rev: board ? board.rev : 0 }), PING_MS).unref();
+  setInterval(() => { if (board && pruneTombstones()) { bump(); persist(); } }, 6 * 3600e3).unref();
+}
 
 /* ---------- HTTP helpers ---------- */
 function send(res, code, obj, headers) {
   const body = JSON.stringify(obj);
   res.writeHead(code, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, headers || {}));
   res.end(body);
+}
+function unauthorized(req, res) {
+  if (req && req.readable) req.resume();
+  return send(res, 401, { error: 'unauthorized' });
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -157,11 +236,95 @@ function serveStatic(req, res, pathname) {
   });
 }
 
+const LOGIN_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kanban login</title></head>\n<body>\n<form method="post" action="/login">\n<label>Token <input name="token" type="password" autocomplete="current-password" maxlength="256" required></label>\n<button type="submit">Sign in</button>\n</form>\n</body>\n</html>\n';
+
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    let settled = false;
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve(value);
+    };
+    req.on('data', ch => {
+      size += ch.length;
+      if (size > limit) {
+        finish(null, null);
+        return;
+      }
+      chunks.push(ch);
+    });
+    req.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
+    req.on('error', err => finish(err));
+  });
+}
+
+function tokenFromLoginBody(raw, contentType) {
+  if (raw == null) return '';
+  const ct = String(contentType || '').toLowerCase();
+  if (ct.includes('application/json')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.token === 'string') return parsed.token;
+      if (parsed && typeof parsed.password === 'string') return parsed.password;
+    } catch (_) { return ''; }
+    return '';
+  }
+  if (ct.includes('application/x-www-form-urlencoded') || raw.includes('=')) {
+    const params = new URLSearchParams(raw);
+    const token = params.get('token');
+    if (typeof token === 'string' && token.length > 0) return token;
+    const password = params.get('password');
+    if (typeof password === 'string' && password.length > 0) return password;
+    return '';
+  }
+  const line = raw.replace(/\r?\n$/, '');
+  if (line && !line.includes('\n') && !line.includes('\r')) return line;
+  return '';
+}
+
+function handleLogin(req, res, method) {
+  if (method === 'GET' || method === 'HEAD') {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Length': Buffer.byteLength(LOGIN_HTML),
+      'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(method === 'HEAD' ? undefined : LOGIN_HTML);
+    return;
+  }
+  return readRaw(req, LOGIN_BODY_MAX).then(raw => {
+    if (res.headersSent) return;
+    if (raw == null) return unauthorized(req, res);
+    const presented = tokenFromLoginBody(raw, req.headers['content-type']);
+    if (!safeEqual(presented, expectedToken)) return unauthorized(req, res);
+    const secure = !!(req.socket && req.socket.encrypted);
+    res.writeHead(302, {
+      Location: '/',
+      'Set-Cookie': loginCookie(expectedToken, secure),
+      'Cache-Control': 'no-store',
+      'Content-Length': 0
+    });
+    res.end();
+  }).catch(() => {
+    if (!res.headersSent) unauthorized(req, res);
+  });
+}
+
 /* ---------- routes ---------- */
 async function handle(req, res) {
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); }
+  catch (_) { return send(res, 400, { error: 'bad path' }); }
   const p = url.pathname;
   const m = req.method;
+
+  if (p === '/login' && (m === 'GET' || m === 'HEAD' || m === 'POST')) return handleLogin(req, res, m);
+  if (!requestAuthorized(req)) return unauthorized(req, res);
 
   if (p === '/healthz') return send(res, 200, { ok: true, version: VERSION, rev: board.rev, cards: board.cards.filter(c => !c.deleted).length, clients: clients.size, uptimeS: Math.round(process.uptime()), serverTime: Date.now() });
 
@@ -233,21 +396,45 @@ async function handle(req, res) {
   return send(res, 405, { error: 'method not allowed' });
 }
 
-/* ---------- start ---------- */
-loadBoard();
-const server = http.createServer((req, res) => {
-  handle(req, res).catch(e => {
-    if (!res.headersSent) send(res, e.code >= 400 && e.code < 600 ? e.code : 500, { error: e.message });
-    if (!(e.code >= 400 && e.code < 500)) log('Error', req.method, req.url, e.stack || e);
-  });
-});
-server.requestTimeout = 0; // SSE streams stay open indefinitely
-server.listen(PORT, HOST, () => log(`Kanban Board v${VERSION} on http://${HOST}:${PORT}  data: ${BOARD_FILE}`));
-function shutdown(sig) {
-  log('Got', sig, '- shutting down');
-  for (const res of clients) { try { res.end(); } catch (_) {} }
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 1500).unref();
+function pathOnly(url) {
+  const value = String(url || '');
+  const q = value.indexOf('?');
+  return q < 0 ? value : value.slice(0, q);
 }
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+
+function failClosed() {
+  try { fs.writeSync(2, 'AUTH_TOKEN not set\n'); } catch (_) {}
+  process.exit(1);
+}
+
+function main() {
+  const token = configuredToken();
+  if (!token || token.length > MAX_TOKEN_CHARS) failClosed();
+  expectedToken = token;
+  loadBoard();
+  startHousekeeping();
+  const server = http.createServer((req, res) => {
+    handle(req, res).catch(e => {
+      if (!res.headersSent) {
+        const code = e.code >= 400 && e.code < 600 ? e.code : 500;
+        if (code === 401) unauthorized(req, res);
+        else send(res, code, { error: code === 500 ? 'server error' : e.message });
+      }
+      if (!(e.code >= 400 && e.code < 500)) log('Error', req.method, pathOnly(req.url), e.stack || e);
+    });
+  });
+  server.requestTimeout = 0; // SSE streams stay open indefinitely
+  server.listen(PORT, HOST, () => log(`Kanban Board v${VERSION} on http://${HOST}:${PORT}  data: ${BOARD_FILE}`));
+  function shutdown(sig) {
+    log('Got', sig, '- shutting down');
+    for (const res of clients) { try { res.end(); } catch (_) {} }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1500).unref();
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+module.exports = { safeEqual, loginCookie, DEFAULT_HOST, MAX_TOKEN_CHARS };
+
+if (require.main === module) main();

@@ -7,9 +7,9 @@ A shared, offline-tolerant Kanban board for two people. A small Node server (`v0
 ## Run
 ```bash
 cd v0.02
-node server.js     # open http://localhost:8080  (TV view: /?tv=1)
+AUTH_TOKEN=replace-me node server.js     # open http://127.0.0.1:8080/login  (TV view: /?tv=1)
 ```
-Requires Node 18+. See `v0.02/README.md` for details.
+Requires Node 18+. The server listens on `127.0.0.1` unless `HOST` is set, and it exits if `AUTH_TOKEN` (or `KANBAN_TOKEN`) is unset. `replace-me` is a placeholder, not a real token. See `v0.02/README.md` for details.
 
 ## Tests
 ```bash
