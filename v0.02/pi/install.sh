@@ -7,6 +7,11 @@
 # Optional settings (put them before the command, e.g. "sudo KANBAN_X11=1 ./pi/install.sh"):
 #   KIOSK_USER=pi        desktop user that shows the TV board (default: the user who ran sudo)
 #   PORT=8080            port for the board server
+#   HOST=127.0.0.1       bind address written into a new env file (default). Set HOST=0.0.0.0
+#                        or a single LAN address only when other devices should reach the board.
+#                        An existing HOST is never rewritten.
+#   AUTH_TOKEN=...       shared secret. If unset, a random one is generated and printed once.
+#                        KANBAN_TOKEN is accepted as another name. Stored mode 0600.
 #   AUTOLOGIN=0          don't switch the Pi to "boot to desktop, logged in" (the kiosk needs it; default 1)
 #   KANBAN_X11=1         switch the desktop to X11/Openbox (lighter on a Pi 3; default: leave the session alone)
 #   KANBAN_HOSTNAME=kanban  rename the Pi so phones can use http://kanban.local:8080 (default: keep the name)
@@ -15,7 +20,8 @@ set -euo pipefail
 
 APP=/opt/kanban
 DATA="$APP/data"
-ENV_FILE=/etc/kanban.env
+ENV_FILE="${KANBAN_ENV_FILE:-/etc/kanban.env}"
+KIOSK_ENV_FILE="${KANBAN_KIOSK_ENV_FILE:-/etc/kanban-kiosk.env}"
 UNIT=/etc/systemd/system/kanban.service
 MARK='# kanban-kiosk'
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +30,202 @@ PORT="${PORT:-8080}"
 say()  { printf '\033[1;35m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
+
+chown_env_if_root() {
+  if [ "$(id -u)" -eq 0 ] && id kanban >/dev/null 2>&1; then
+    chown kanban:kanban "$1"
+  fi
+}
+
+env_has_token() {
+  awk '
+    /^AUTH_TOKEN=/ || /^KANBAN_TOKEN=/ {
+      v = substr($0, index($0, "=") + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (v != "") found = 1
+    }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
+pick_token() {
+  local token=""
+  if [ -n "${AUTH_TOKEN:-}" ]; then
+    token="$AUTH_TOKEN"
+  elif [ -n "${KANBAN_TOKEN:-}" ]; then
+    token="$KANBAN_TOKEN"
+  else
+    token="$(openssl rand -hex 16)" || die "Could not generate AUTH_TOKEN"
+    [[ "$token" =~ ^[A-Za-z0-9_-]{32,}$ ]] || die "Could not generate AUTH_TOKEN"
+  fi
+  case "$token" in
+    ''|*[!A-Za-z0-9_-]*) die "Refusing to store an empty or non-plain AUTH_TOKEN" ;;
+  esac
+  if [ "${#token}" -lt 32 ]; then die "Refusing to store a short AUTH_TOKEN"; fi
+  printf '%s' "$token"
+}
+
+print_new_token() {
+  # A pipe or log is not a terminal: print the file path only, never the token.
+  if [ -t 1 ]; then
+    printf '%s\n' "AUTH_TOKEN (shown once; store it; it will not be printed again): ${1}"
+  else
+    printf '%s\n' "$ENV_FILE"
+  fi
+}
+
+write_new_env_file() {
+  local dest="$1" token="$2" host="$3" old_umask
+  old_umask="$(umask)"
+  umask 077
+  cat > "$dest" <<CONF
+# Kanban Board settings. After changing: sudo systemctl restart kanban
+# AUTH_TOKEN is the shared board secret. This file is mode 0600.
+PORT=$PORT
+# Bind address. 127.0.0.1 (the default) is this machine only, which is enough for the TV.
+# Other devices need an explicit all-interfaces bind, or HOST set to one LAN address.
+# The token is still required either way. Do not forward port ${PORT} off the LAN.
+HOST=$host
+AUTH_TOKEN=$token
+DATA_DIR=$DATA
+BACKUPS=30
+BACKUP_MIN_INTERVAL_S=300
+TOMBSTONE_DAYS=60
+# What the TV opens. Sign in first, then show the board. (&theme=dark, &reload=6 still work on the next path.)
+KIOSK_URL=http://localhost:$PORT/login?next=/?tv=1
+# --- Optional overnight screen-off (placeholder, not active in v0.02) ---
+# SCREEN_OFF_AT=23:00
+# SCREEN_ON_AT=06:30
+CONF
+  umask "$old_umask"
+  chmod 600 "$dest"
+  chown_env_if_root "$dest"
+}
+
+ensure_env_file() {
+  local token host current old_umask
+  if [ ! -f "$ENV_FILE" ]; then
+    say "Writing settings to $ENV_FILE"
+    token="$(pick_token)"
+    host="${HOST:-127.0.0.1}"
+    case "$host" in
+      ''|*[!A-Za-z0-9.:_-]*) die "HOST is not a plain address" ;;
+    esac
+    write_new_env_file "$ENV_FILE" "$token" "$host"
+    print_new_token "$token"
+    return
+  fi
+  chmod 600 "$ENV_FILE"
+  chown_env_if_root "$ENV_FILE"
+  if ! env_has_token "$ENV_FILE"; then
+    token="$(pick_token)"
+    old_umask="$(umask)"
+    umask 077
+    printf '\nAUTH_TOKEN=%s\n' "$token" >> "$ENV_FILE"
+    umask "$old_umask"
+    chmod 600 "$ENV_FILE"
+    print_new_token "$token"
+  fi
+  if awk -F= '$1=="HOST"{found=1} END{exit found?0:1}' "$ENV_FILE"; then
+    current="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+    case "$current" in
+      127.0.0.1|localhost|::1) ;;
+      '') warn "HOST is blank in $ENV_FILE. Left unchanged. Phones will not connect until you set HOST=0.0.0.0 or one LAN address. The token is still required. Do not forward port ${PORT} off the LAN." ;;
+      *) warn "HOST=${current} is not loopback. Left unchanged so existing clients keep working. The token is still required. Do not forward port ${PORT} off the LAN." ;;
+    esac
+  else
+    warn "HOST is not set in $ENV_FILE. Left unchanged. This server defaults to 127.0.0.1, so phones that used the previous all-interfaces default will not connect until you add HOST=0.0.0.0 or one LAN address. The token is still required. Do not forward port ${PORT} off the LAN."
+  fi
+}
+
+write_kiosk_env() {
+  local port host url old_umask
+  port="$(awk -F= '$1=="PORT"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+  case "$port" in
+    ''|*[!0-9]*) port="$PORT" ;;
+  esac
+  host="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+  case "$host" in
+    ''|*[!A-Za-z0-9.:_-]*) host="" ;;
+  esac
+  url="http://localhost:${port}/login?next=/?tv=1"
+  old_umask="$(umask)"
+  umask 022
+  {
+    echo "# TV settings only. The board token stays in the mode 0600 env file."
+    echo "PORT=$port"
+    if [ -n "$host" ]; then echo "HOST=$host"; fi
+    echo "KIOSK_URL=$url"
+  } > "$KIOSK_ENV_FILE"
+  umask "$old_umask"
+  chmod 644 "$KIOSK_ENV_FILE"
+}
+
+file_auth_token() {
+  awk '
+    /^AUTH_TOKEN=/ { v = substr($0, index($0, "=") + 1); if (v != "") a = v }
+    /^KANBAN_TOKEN=/ { v = substr($0, index($0, "=") + 1); if (v != "" && k == "") k = v }
+    END { if (a != "") print a; else if (k != "") print k }
+  ' "$1"
+}
+
+curl_auth() {
+  local url="$1" token="$2" cfg rc
+  [ -n "$token" ] || return 1
+  cfg="$(mktemp)"
+  chmod 600 "$cfg"
+  printf 'header = "Authorization: Bearer %s"\n' "$token" > "$cfg"
+  curl --config "$cfg" -fsS -m 2 -o /dev/null "$url" && rc=0 || rc=$?
+  rm -f "$cfg"
+  return "$rc"
+}
+
+health_url() {
+  local bind
+  bind="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+  case "$bind" in
+    ''|0.0.0.0|127.0.0.1|localhost|::|::1) printf 'http://127.0.0.1:%s/healthz\n' "$PORT" ;;
+    *) printf 'http://%s:%s/healthz\n' "$bind" "$PORT" ;;
+  esac
+}
+
+print_how_to_reach() {
+  local bind
+  bind="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+  echo
+  say "Done! Kanban Board is installed."
+  echo "   TV:      opens the sign-in page after a reboot (sudo reboot). Enter the token once; the board stays on the TV after that."
+  case "$bind" in
+    127.0.0.1|localhost|::1|'')
+      echo "   Network: this board listens on loopback only. Other devices cannot open it until HOST in $ENV_FILE is set to all interfaces or one LAN address. The token is still required. Do not forward port $PORT off the LAN."
+      ;;
+    *)
+      local hostn eth_ip all_ips ip
+      hostn="${KANBAN_HOSTNAME:-$(hostname)}"
+      eth_ip="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+      all_ips="$(hostname -I 2>/dev/null || true)"
+      echo "   Phones:  on the same network, open one of these and sign in:"
+      [ -n "$eth_ip" ] && echo "              http://$eth_ip:$PORT/login        (Ethernet)"
+      for ip in $all_ips; do
+        case "$ip" in *:*|"$eth_ip") ;; *) echo "              http://$ip:$PORT/login";; esac
+      done
+      systemctl is-active --quiet avahi-daemon 2>/dev/null && echo "              http://$hostn.local:$PORT/login   (name-based; works on most phones)"
+      [ -z "$eth_ip" ] && warn "eth0 has no IPv4 address yet. Is the Ethernet cable plugged in? (Wi-Fi also works.)"
+      ;;
+  esac
+  echo "   Data:    $DATA/board.json  (backups in $DATA/backups)"
+  echo "   Logs:    journalctl -u kanban -f"
+  echo "   Sign-in: the TV opens /login on its own. Other browsers open /login once. The token was printed when it was first written."
+}
+
+if [ "${KANBAN_INSTALL_DRY_RUN:-0}" = 1 ]; then
+  [ "$ENV_FILE" != /etc/kanban.env ] || die "Dry run needs KANBAN_ENV_FILE set to a temp path"
+  if [ -z "${KANBAN_KIOSK_ENV_FILE:-}" ]; then KIOSK_ENV_FILE="${ENV_FILE}.kiosk"; fi
+  ensure_env_file
+  write_kiosk_env
+  print_how_to_reach
+  exit 0
+fi
 
 [ "$(id -u)" -eq 0 ] || die "Please run with sudo:  sudo $0"
 [ -f "$SRC/server.js" ] && [ -f "$SRC/public/index.html" ] || die "Run this from the copied kanban folder (couldn't find server.js next to pi/)."
@@ -86,27 +288,15 @@ install -m 755 "$SRC/pi/kiosk.sh" "$SRC/pi/watchdog.sh" "$SRC/pi/uninstall.sh" "
 install -d -m 750 -o kanban -g kanban "$DATA"   # board.json + backups live here; never overwritten by reinstalls
 chown -R root:root "$APP/public" "$APP/pi" "$APP/server.js"
 
-if [ ! -f "$ENV_FILE" ]; then
-  say "Writing settings to $ENV_FILE"
-  cat > "$ENV_FILE" <<CONF
-# Kanban Board settings. After changing: sudo systemctl restart kanban
-PORT=$PORT
-# 0.0.0.0 = reachable from phones on the home network (Ethernet or Wi-Fi), not just this Pi
-HOST=0.0.0.0
-DATA_DIR=$DATA
-BACKUPS=30
-BACKUP_MIN_INTERVAL_S=300
-TOMBSTONE_DAYS=60
-# What the TV opens (add &theme=dark for dark mode, &reload=6 = clean reload every N hours)
-KIOSK_URL=http://localhost:$PORT/?tv=1
-# --- Optional overnight screen-off (placeholder, not active in v0.02) ---
-# SCREEN_OFF_AT=23:00
-# SCREEN_ON_AT=06:30
-CONF
-fi
+ensure_env_file
+write_kiosk_env
 
 # ---------- server service ----------
 say "Setting up kanban.service (starts at boot, restarts itself if it stops)"
+NODE_FLAGS="--lite-mode --max-old-space-size=32 --max-semi-space-size=1"
+if "$NODE_BIN" --no-expose-wasm -e 0 >/dev/null 2>&1; then
+  NODE_FLAGS="--no-expose-wasm $NODE_FLAGS"
+fi
 cat > "$UNIT" <<UNITEOF
 [Unit]
 Description=Kanban Board (Kanban server)
@@ -119,7 +309,7 @@ Group=kanban
 EnvironmentFile=-$ENV_FILE
 WorkingDirectory=$APP
 # Small-memory V8 settings: keeps the server around 30-50 MB RSS (no JIT needed for a tiny JSON API)
-ExecStart=$NODE_BIN --no-expose-wasm --lite-mode --max-old-space-size=32 --max-semi-space-size=1 $APP/server.js
+ExecStart=$NODE_BIN $NODE_FLAGS $APP/server.js
 Restart=always
 RestartSec=2
 MemoryMax=120M
@@ -155,10 +345,13 @@ systemctl restart kanban.service
 systemctl enable --now kanban-watchdog.timer >/dev/null
 
 ok=0
+health_token="$(file_auth_token "$ENV_FILE")"
+health_target="$(health_url)"
 for _ in $(seq 1 30); do
-  if curl -fsS -m 2 "http://localhost:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
+  if curl_auth "$health_target" "$health_token"; then ok=1; break; fi
   sleep 1
 done
+unset health_token
 if [ "$ok" -eq 1 ]; then say "Server is up on port $PORT"; else warn "Server didn't answer yet. Check: journalctl -u kanban -n 50"; fi
 
 # ---------- TV kiosk ----------
@@ -217,18 +410,4 @@ if [ -n "${KANBAN_HOSTNAME:-}" ]; then
 fi
 
 # ---------- how to reach it ----------
-HOSTN="${KANBAN_HOSTNAME:-$(hostname)}"
-ETH_IP="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
-ALL_IPS="$(hostname -I 2>/dev/null || true)"
-echo
-say "Done! Kanban Board is installed."
-echo "   TV:      opens by itself after a reboot  (sudo reboot)"
-echo "   Phones:  on the same home network, open one of these:"
-[ -n "$ETH_IP" ] && echo "              http://$ETH_IP:$PORT        (Ethernet)"
-for ip in $ALL_IPS; do
-  case "$ip" in *:*|"$ETH_IP") ;; *) echo "              http://$ip:$PORT";; esac
-done
-systemctl is-active --quiet avahi-daemon 2>/dev/null && echo "              http://$HOSTN.local:$PORT   (name-based; works on most phones)"
-[ -z "$ETH_IP" ] && warn "eth0 has no IPv4 address yet. Is the Ethernet cable plugged in? (Wi-Fi also works.)"
-echo "   Data:    $DATA/board.json  (backups in $DATA/backups)"
-echo "   Logs:    journalctl -u kanban -f"
+print_how_to_reach

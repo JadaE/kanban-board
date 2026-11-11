@@ -4,6 +4,7 @@ keys/
 credentials*
 secret-config.json
 site-config.json
+config.local.json
 .herenow/
 herenow/
 state.json
@@ -36,3 +37,4 @@ logs/
 .DS_Store
 screenshots/
 v0.02/test/results.json
+v0.02/test/memory-results.json

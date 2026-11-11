@@ -6,29 +6,31 @@
 - **Live updates.** When someone adds, edits, moves or deletes a card, every open screen updates within about a second. Nobody has to refresh.
 - **Works through hiccups.** If the Pi can't be reached, you can still open the board on the device you used last and keep working. Your changes wait in line (a "· 2 waiting" note shows next to the status dot) and sync by themselves when the Pi is back.
 - **Status dot** at the top: 🟢 *Live*, 🟡 *Reconnecting…*, 🔴 *Offline*.
-- **"Who are you?"** Each phone or computer asks once: Person A or Person B. No passwords. It only decides:
+- **"Who are you?"** Each phone or computer asks once: Person A or Person B. It only decides:
   - who new cards belong to by default, and
   - the small "✎ Person B" note showing who last changed a card.
-  It's saved on that device only. Tap the name chip at the top to switch.
+  It's saved on that device only. Tap the name chip at the top to switch. This picker is not the board's access token.
 - **"Husband" is now "Person B"** everywhere. Old backups that say "husband" are converted automatically.
-- **TV mode.** Open the board with `?tv=1` (the Pi does this by itself) to get big text, no mouse pointer, no buttons, no animations, and a clock. It reconnects and reloads on its own.
+- **TV mode.** Open the board with `?tv=1` to get big text, no mouse pointer, no buttons, no animations, and a clock. The TV signs in at `/login` and then opens that view. It reconnects and reloads on its own.
 - **Backups.** Export/Import still work. Import now replaces the shared board for everyone. The Pi also keeps its own rolling backups (the last 30 versions, at most one every 5 minutes).
 - **If two people change the same card while offline**, the most recent change wins. **A deleted card stays deleted**, even if an old offline edit to it arrives later.
 
 ## Try it on a computer
 
-You need Node.js 18 or newer.
+You need Node.js 18 or newer. The server refuses to start until a shared token is set.
 
 ```bash
 cd v0.02
-node server.js            # then open http://localhost:8080
-# TV view:                  http://localhost:8080/?tv=1   (add &theme=dark for dark mode)
+AUTH_TOKEN=replace-me-with-a-long-random-token node server.js
+# sign in:                 http://127.0.0.1:8080/login
+# TV view, after sign-in:  http://127.0.0.1:8080/?tv=1   (add &theme=dark for dark mode)
 ```
 
-Other devices on the same network can open `http://<this-computer's-IP>:8080`.
+`replace-me-with-a-long-random-token` is a placeholder. Choose a random token of at least 32 characters and do not commit it. The server refuses to start with a shorter one. `KANBAN_TOKEN` is accepted when `AUTH_TOKEN` is unset. The default bind address is `127.0.0.1` (this machine only). Set `HOST=0.0.0.0`, or one LAN address, only when other devices should open the board. The token is still required, and port 8080 should not be forwarded off the LAN. A new token is printed only when the installer is attached to a terminal; otherwise the installer prints the path of the mode `0600` env file. Repeated wrong guesses get `429`.
+
 Opening `public/index.html` straight from disk (no server) still works like v0.01: the board is saved in that browser only.
 
-Settings (environment variables): `PORT` (8080), `HOST` (0.0.0.0), `DATA_DIR` (./data), `BACKUPS` (30), `BACKUP_MIN_INTERVAL_S` (300), `TOMBSTONE_DAYS` (60), `PING_S` (15).
+Settings (environment variables): `PORT` (8080), `HOST` (127.0.0.1), `AUTH_TOKEN` (required), `DATA_DIR` (./data), `BACKUPS` (30), `BACKUP_MIN_INTERVAL_S` (300), `TOMBSTONE_DAYS` (60), `PING_S` (15). `config.example.json` lists those keys with placeholders only. Keep machine-local values in `config.local.json` (gitignored). The server reads the environment, not those JSON files.
 
 ## Put it on the Raspberry Pi (TV)
 
@@ -40,20 +42,21 @@ Made for a **Raspberry Pi 3 (1 GB) on Ethernet** running Raspberry Pi OS with de
    ```bash
    cd ~/kanban && sudo ./pi/install.sh
    ```
-3. When it says **Done!**, type `sudo reboot`. The TV comes up on the board by itself.
+3. When it says **Done!**, type `sudo reboot`. The TV opens the sign-in page. The installer prints a new token once on this terminal. Enter it on the TV once; the board then stays in TV mode. Each other browser opens `/login` once as well.
 
-At the end, the installer prints the address phones should open. It looks like `http://192.168.1.23:8080` (Ethernet), or `http://raspberrypi.local:8080`.
-**Tip:** reserve that IP for the Pi in your router (often called "DHCP reservation") so the address never changes. To use a nicer name, run it as `sudo KANBAN_HOSTNAME=kanban ./pi/install.sh` and open `http://kanban.local:8080`.
+A new `/etc/kanban.env` uses `HOST=127.0.0.1` and mode `0600`, owned by the `kanban` service user. Running the installer again does not replace a token that is already set; if the token line is missing it appends one and prints it once. An existing `HOST`, including an all-interfaces bind, is left unchanged and the installer warns. If an older env file has no `HOST` line at all, that line is also left unset and the installer warns: this server now defaults to loopback, so phones that used the old all-interfaces default will not connect until you add `HOST`. Set `HOST` yourself when other devices on the network should reach the board. The token is still required, and port 8080 should not be forwarded off the LAN. The installer prints network addresses only when `HOST` is not loopback, and those addresses include `/login`.
+
+The TV opens `http://localhost:8080/login?next=/?tv=1`. A separate world-readable file, `/etc/kanban-kiosk.env`, holds only `PORT`, `HOST`, and `KIOSK_URL` so the desktop user can open the sign-in page without reading the token.
 
 What the installer does (running it again is safe):
 - Installs Node.js if needed. It uses Raspberry Pi OS's own package first, then falls back to NodeSource (64-bit) or the official build (32-bit armv7l).
 - Copies the app to `/opt/kanban`. Your data lives in `/opt/kanban/data/` and is never overwritten by reinstalls.
 - Creates `kanban.service`, which starts at boot and restarts itself if it ever stops. A one-minute watchdog also restarts it if it stops answering.
 - Sets up the TV:
-  - Chromium opens full screen on `http://localhost:8080/?tv=1`, with no pointer and no "restore pages" or error bubbles.
+  - Chromium opens full screen on `http://localhost:8080/login?next=/?tv=1`, with no pointer and no "restore pages" or error bubbles.
   - Screen blanking is turned off, and the Pi is set to boot to the desktop logged in.
   - Chromium is relaunched if it crashes or if the Pi runs very low on memory.
-- Settings go in `/etc/kanban.env` (port, TV address, backups). There's also a commented placeholder for overnight screen-off hours.
+- Settings go in `/etc/kanban.env` (port, bind address, token, backups), mode `0600`. The TV reads `/etc/kanban-kiosk.env` (port, bind address, sign-in URL only). There's also a commented placeholder for overnight screen-off hours.
 
 Desktop note: current Raspberry Pi OS uses the **labwc (Wayland)** desktop on every model, the Pi 3 included. Older Pi 3 installs use **X11**. The installer sets up the TV for both. If the Pi 3 feels slow, `sudo KANBAN_X11=1 ./pi/install.sh` switches it to the lighter X11 desktop (takes effect after a reboot).
 
@@ -69,7 +72,7 @@ sudo /opt/kanban/pi/uninstall.sh   # remove (keeps a copy of your data in /var/b
 
 ## Known limitations (v0.02)
 
-- **No login.** Anyone on your home network who knows the address can see and edit the board. Don't forward the port on your router. Secure access from outside the home (Tailscale + HTTPS) comes in **v0.03**.
+- **Shared token.** `/api/*`, `/healthz`, and live updates require the install token (`Authorization: Bearer`, or the `kanban_token` cookie from `POST /login`). Opening the board page without a token redirects to `/login` and keeps a same-origin `next` path such as `/?tv=1`. A missing token and a wrong token still get the same `401` body on the API and the health check. The "Who are you?" picker is still only a per-device label. Do not forward port 8080 off the LAN. HTTPS is not part of this version; the cookie's `Secure` flag is added only when the request itself is HTTPS. An authenticated page load refreshes the cookie.
 - **Opening the board on a phone while the Pi is unreachable:** a page that's already open keeps working and queues your changes. But re-opening the page from scratch only works on the TV for now, because phones need HTTPS for offline storage. This is fixed in v0.03 together with the **installable Android app (PWA)**.
 - **"Newest change wins" is per card.** If Person A changes the title and Person B changes the due date of the same card at the same moment, only the newer of the two edits is kept. Timestamps follow the Pi's clock, so a Pi with a badly wrong clock could pick the wrong winner.
 - An offline edit made more than 60 days after a card was deleted could bring that card back (old delete records are cleaned up after 60 days).
@@ -82,13 +85,15 @@ sudo /opt/kanban/pi/uninstall.sh   # remove (keeps a copy of your data in /var/b
 ```
 v0.02/
   server.js              tiny Node server (no npm packages): page + JSON API + live events
+  config.example.json    placeholder settings only (the server reads the environment)
   public/index.html      the board (v0.01 + live sync, status dot, "Who are you?", TV mode)
   public/sw.js           small offline cache for the page (used where the browser allows it)
   pi/install.sh          one-command Pi setup        pi/uninstall.sh   removal
   pi/kiosk.sh            starts and minds Chromium   pi/watchdog.sh    restarts a stuck server
   test/sync.test.js      two-device tests against a local server (node test/sync.test.js)
+  test/auth.test.js      token, login cookie, fail-closed startup, and bind-address checks
   test/memory.test.js    Pi 3 memory check (test/run-memory-capped.sh runs it under a 450 MB cap)
   screenshots/           phone, desktop and 1080p TV screenshots
 ```
 
-API (for the curious): `GET /api/board`, `PUT /api/card/:id`, `DELETE /api/card/:id`, `PUT /api/board` (replace, used by Import), `PUT /api/meta` (tag colors), `GET /api/events` (live updates), `GET /healthz`.
+API (for the curious): `GET /login` and `POST /login`, then `GET /api/board`, `PUT /api/card/:id`, `DELETE /api/card/:id`, `PUT /api/board` (replace, used by Import), `PUT /api/meta` (tag colors), `GET /api/events` (live updates), `GET /healthz`. Send `Authorization: Bearer` or the `kanban_token` cookie. Do not put the token in the query string.

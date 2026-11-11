@@ -1,18 +1,34 @@
 /* v0.02 end-to-end tests against a simulated Pi (the real server.js on this machine).
    Two separate browser contexts = two devices (phone A, TV B).  Run: node test/sync.test.js */
 const {chromium}=require(process.env.PW||'playwright-core');
-const {spawn}=require('child_process');const fs=require('fs');const path=require('path');const http=require('http');
+const {spawn,spawnSync}=require('child_process');const fs=require('fs');const path=require('path');const http=require('http');
 const ROOT=path.resolve(__dirname,'..');const PORT=process.env.TEST_PORT||'8099';const BASE=`http://localhost:${PORT}/`;
+const TOKEN='fake-test-token-not-a-secret-xxx';
 const DATA=fs.mkdtempSync('/tmp/kanban-test-');const SHOTS=path.join(ROOT,'screenshots');fs.mkdirSync(SHOTS,{recursive:true});
 let srv=null;const results=[];const consoleErrors=[];const expectedNetErrors=[];let phase='normal';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function startServer(){return new Promise((res,rej)=>{srv=spawn(process.execPath,['--no-expose-wasm','--lite-mode','--max-old-space-size=32','--max-semi-space-size=1',path.join(ROOT,'server.js')],{env:{...process.env,PORT,DATA_DIR:DATA,PING_S:'5',BACKUP_MIN_INTERVAL_S:'0',BACKUPS:'5'},stdio:['ignore','pipe','pipe']});
-  srv.stdout.on('data',d=>{if(/on http/.test(d))res();});srv.stderr.on('data',d=>process.stderr.write('[server] '+d));srv.on('exit',c=>{if(c&&c!==0)rej(new Error('server exit '+c));});});}
+function serverNodeArgs(script){
+  const probe=spawnSync(process.execPath,['--no-expose-wasm','-e','0'],{encoding:'utf8'});
+  const args=[];
+  if(probe.status===0)args.push('--no-expose-wasm');
+  args.push('--lite-mode','--max-old-space-size=32','--max-semi-space-size=1',script);
+  return args;
+}
+function startServer(){return new Promise((res,rej)=>{
+  let settled=false; const finish=err=>{if(settled)return; settled=true; clearTimeout(timer); if(err)rej(err); else res();};
+  const timer=setTimeout(()=>finish(new Error('server did not become ready')),8000);
+  srv=spawn(process.execPath,serverNodeArgs(path.join(ROOT,'server.js')),{env:{...process.env,PORT,HOST:'127.0.0.1',DATA_DIR:DATA,AUTH_TOKEN:TOKEN,PING_S:'5',BACKUP_MIN_INTERVAL_S:'0',BACKUPS:'5'},stdio:['ignore','pipe','pipe']});
+  let out='';
+  srv.stdout.on('data',d=>{out+=d; if(/on http/.test(out))finish();});
+  srv.stderr.on('data',d=>process.stderr.write('[server] '+d));
+  srv.on('exit',c=>{if(!settled)finish(new Error('server exit '+c));});
+});}
 function stopServer(sig){return new Promise(r=>{if(!srv)return r();srv.once('exit',()=>{srv=null;r();});srv.kill(sig||'SIGTERM');});}
-function api(method,p,body){const data=body?JSON.stringify(body):'';return new Promise((res,rej)=>{const r=http.request(BASE+p.replace(/^\//,''),{method,headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>{try{res({status:s.statusCode,json:JSON.parse(d)});}catch(_){res({status:s.statusCode,text:d});}});});r.on('error',rej);if(data)r.write(data);r.end();});}
+function api(method,p,body){const data=body?JSON.stringify(body):'';return new Promise((res,rej)=>{const r=http.request(BASE+p.replace(/^\//,''),{method,headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),'Authorization':'Bearer '+TOKEN}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>{try{res({status:s.statusCode,json:JSON.parse(d)});}catch(_){res({status:s.statusCode,text:d});}});});r.on('error',rej);if(data)r.write(data);r.end();});}
 async function check(name,fn){const t=Date.now();try{const info=await fn();results.push({name,ok:true,info,ms:Date.now()-t});console.log('PASS',name,info||'');}
   catch(e){results.push({name,ok:false,info:e.message,ms:Date.now()-t});console.log('FAIL',name,'-',e.message);}}
 const assert=(c,m)=>{if(!c)throw new Error(m);};
+async function authed(ctx){await ctx.addCookies([{name:'kanban_token',value:TOKEN,url:BASE,httpOnly:true,sameSite:'Strict'}]);}
 async function waitFor(page,fn,arg,timeout=8000){const t=Date.now();await page.waitForFunction(fn,arg,{timeout,polling:50});return Date.now()-t;}
 const cardsOn=(page)=>page.evaluate(()=>window.__kanban.state.cards.map(c=>({id:c.id,title:c.title,column:c.column,owner:c.owner})));
 const findCard=(page,title)=>page.evaluate(t=>window.__kanban.state.cards.find(c=>c.title===t)||null,title);
@@ -28,6 +44,7 @@ function watch(page,label){
   const browser=await chromium.launch({executablePath:process.env.CHROME||'/usr/bin/google-chrome',args:['--no-sandbox']});
   const ctxA=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,acceptDownloads:true});   // phone
   const ctxB=await browser.newContext({viewport:{width:1920,height:1080}});                                                  // TV
+  await authed(ctxA);await authed(ctxB);
   const asWho=who=>`if(!localStorage.getItem('kanban-me'))localStorage.setItem('kanban-me','${who}')`;
   await ctxA.addInitScript(asWho('persona'));
   const A=await ctxA.newPage();watch(A,'A');const B=await ctxB.newPage();watch(B,'B');
@@ -149,7 +166,7 @@ function watch(page,label){
     return 'import + server load both map husband→personb; menus show "🧢 Person B"';});
 
   await check("'Who are you?' picker: per-device, sets default owner, records lastEditedBy",async()=>{
-    const ctx=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});const P=await ctx.newPage();watch(P,'P');
+    const ctx=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});await authed(ctx);const P=await ctx.newPage();watch(P,'P');
     await P.goto(BASE);await live(P);
     assert(await P.evaluate(()=>document.querySelector('#whoDlg').open),'picker not shown on a new device');
     assert(!(await B.evaluate(()=>document.querySelector('#whoDlg').open)),'picker shown on TV');
@@ -187,15 +204,17 @@ function watch(page,label){
   // screenshots
   await A.goto(BASE);await live(A);await sleep(300);await A.screenshot({path:path.join(SHOTS,'phone-390x844.png')});
   await B.reload();await live(B);await sleep(300);await B.screenshot({path:path.join(SHOTS,'tv-1080p.png')});
-  const D=await (await browser.newContext({viewport:{width:1920,height:1080}})).newPage();watch(D,'D');await D.goto(BASE+'?tv=1&theme=dark');await live(D);await sleep(300);await D.screenshot({path:path.join(SHOTS,'tv-1080p-dark.png')});
-  const L=await (await browser.newContext({viewport:{width:1280,height:800}})).newPage();watch(L,'L');await L.goto(BASE);await live(L);await sleep(300);await L.screenshot({path:path.join(SHOTS,'desktop-1280.png')});
+  const dark=await browser.newContext({viewport:{width:1920,height:1080}});await authed(dark);
+  const D=await dark.newPage();watch(D,'D');await D.goto(BASE+'?tv=1&theme=dark');await live(D);await sleep(300);await D.screenshot({path:path.join(SHOTS,'tv-1080p-dark.png')});
+  const desk=await browser.newContext({viewport:{width:1280,height:800}});await authed(desk);
+  const L=await desk.newPage();watch(L,'L');await L.goto(BASE);await live(L);await sleep(300);await L.screenshot({path:path.join(SHOTS,'desktop-1280.png')});
 
   await check('memory budget (Pi 3, 1 GB): server RSS and TV page size',async()=>{
     const rss=pid=>{const m=fs.readFileSync(`/proc/${pid}/status`,'utf8').match(/VmRSS:\s+(\d+)/);return +m[1]/1024;};
     const idle=rss(srv.pid);
     // load: 300 extra cards and 20 extra live SSE clients
     for(let i=0;i<300;i++)await api('PUT','/api/card/load'+i,{id:'load'+i,title:'Load test card '+i,notes:'x'.repeat(120),column:['ideas','todo','doing','done'][i%4],priority:'med',tags:['load'],checklist:[],owner:'persona',order:i,createdAt:Date.now(),updatedAt:Date.now()});
-    const es=[];for(let i=0;i<20;i++)es.push(http.get(BASE+'api/events',r=>r.resume()));
+    const es=[];for(let i=0;i<20;i++)es.push(http.get(BASE+'api/events',{headers:{Authorization:'Bearer '+TOKEN}},r=>r.resume()));
     await sleep(1500);const loaded=rss(srv.pid);es.forEach(r=>r.destroy());
     // TV page metrics with the bigger board, via Chrome DevTools
     await B.reload();await live(B);await waitFor(B,()=>window.__kanban.state.cards.length>300);await sleep(500);
@@ -203,7 +222,8 @@ function watch(page,label){
     const m=Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(x=>[x.name,x.value]));
     for(let i=0;i<300;i++)await api('DELETE','/api/card/load'+i,{updatedAt:Date.now()});
     const out={serverIdleMB:+idle.toFixed(1),serverLoadedMB:+loaded.toFixed(1),tvJsHeapMB:+(m.JSHeapUsedSize/1048576).toFixed(1),tvDomNodes:m.Nodes,cards:310};
-    const bare=+require('child_process').execSync(`${process.execPath} -e "setTimeout(()=>console.log(process.memoryUsage().rss),300)"`).toString()/1048576;
+    // Baseline loads crypto, which the SHA-256 token compare also loads.
+    const bare=+require('child_process').execSync(`${process.execPath} -e "require('crypto');setTimeout(()=>console.log(process.memoryUsage().rss),300)"`).toString()/1048576;
     out.bareNodeMB=+bare.toFixed(1);out.serverOverheadMB=+(loaded-bare).toFixed(1);
     global.MEM=out;assert(loaded-bare<10&&loaded<56,'server RSS '+loaded.toFixed(1)+' MB (bare node '+bare.toFixed(1)+')');return JSON.stringify(out);});
 
