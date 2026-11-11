@@ -1,14 +1,28 @@
 /* v0.02 end-to-end tests against a simulated Pi (the real server.js on this machine).
    Two separate browser contexts = two devices (phone A, TV B).  Run: node test/sync.test.js */
 const {chromium}=require(process.env.PW||'playwright-core');
-const {spawn}=require('child_process');const fs=require('fs');const path=require('path');const http=require('http');
+const {spawn,spawnSync}=require('child_process');const fs=require('fs');const path=require('path');const http=require('http');
 const ROOT=path.resolve(__dirname,'..');const PORT=process.env.TEST_PORT||'8099';const BASE=`http://localhost:${PORT}/`;
 const TOKEN='fake-test-token';
 const DATA=fs.mkdtempSync('/tmp/kanban-test-');const SHOTS=path.join(ROOT,'screenshots');fs.mkdirSync(SHOTS,{recursive:true});
 let srv=null;const results=[];const consoleErrors=[];const expectedNetErrors=[];let phase='normal';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function startServer(){return new Promise((res,rej)=>{srv=spawn(process.execPath,['--no-expose-wasm','--lite-mode','--max-old-space-size=32','--max-semi-space-size=1',path.join(ROOT,'server.js')],{env:{...process.env,PORT,HOST:'127.0.0.1',DATA_DIR:DATA,AUTH_TOKEN:TOKEN,PING_S:'5',BACKUP_MIN_INTERVAL_S:'0',BACKUPS:'5'},stdio:['ignore','pipe','pipe']});
-  srv.stdout.on('data',d=>{if(/on http/.test(d))res();});srv.stderr.on('data',d=>process.stderr.write('[server] '+d));srv.on('exit',c=>{if(c&&c!==0)rej(new Error('server exit '+c));});});}
+function serverNodeArgs(script){
+  const probe=spawnSync(process.execPath,['--no-expose-wasm','-e','0'],{encoding:'utf8'});
+  const args=[];
+  if(probe.status===0)args.push('--no-expose-wasm');
+  args.push('--lite-mode','--max-old-space-size=32','--max-semi-space-size=1',script);
+  return args;
+}
+function startServer(){return new Promise((res,rej)=>{
+  let settled=false; const finish=err=>{if(settled)return; settled=true; clearTimeout(timer); if(err)rej(err); else res();};
+  const timer=setTimeout(()=>finish(new Error('server did not become ready')),8000);
+  srv=spawn(process.execPath,serverNodeArgs(path.join(ROOT,'server.js')),{env:{...process.env,PORT,HOST:'127.0.0.1',DATA_DIR:DATA,AUTH_TOKEN:TOKEN,PING_S:'5',BACKUP_MIN_INTERVAL_S:'0',BACKUPS:'5'},stdio:['ignore','pipe','pipe']});
+  let out='';
+  srv.stdout.on('data',d=>{out+=d; if(/on http/.test(out))finish();});
+  srv.stderr.on('data',d=>process.stderr.write('[server] '+d));
+  srv.on('exit',c=>{if(!settled)finish(new Error('server exit '+c));});
+});}
 function stopServer(sig){return new Promise(r=>{if(!srv)return r();srv.once('exit',()=>{srv=null;r();});srv.kill(sig||'SIGTERM');});}
 function api(method,p,body){const data=body?JSON.stringify(body):'';return new Promise((res,rej)=>{const r=http.request(BASE+p.replace(/^\//,''),{method,headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),'Authorization':'Bearer '+TOKEN}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>{try{res({status:s.statusCode,json:JSON.parse(d)});}catch(_){res({status:s.statusCode,text:d});}});});r.on('error',rej);if(data)r.write(data);r.end();});}
 async function check(name,fn){const t=Date.now();try{const info=await fn();results.push({name,ok:true,info,ms:Date.now()-t});console.log('PASS',name,info||'');}

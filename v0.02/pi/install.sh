@@ -21,6 +21,7 @@ set -euo pipefail
 APP=/opt/kanban
 DATA="$APP/data"
 ENV_FILE="${KANBAN_ENV_FILE:-/etc/kanban.env}"
+KIOSK_ENV_FILE="${KANBAN_KIOSK_ENV_FILE:-/etc/kanban-kiosk.env}"
 UNIT=/etc/systemd/system/kanban.service
 MARK='# kanban-kiosk'
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,7 +56,7 @@ pick_token() {
     token="$KANBAN_TOKEN"
   else
     token="$(openssl rand -hex 16)" || die "Could not generate AUTH_TOKEN"
-    [[ "$token" =~ ^[0-9a-f]{32}$ ]] || die "Could not generate AUTH_TOKEN"
+    [[ "$token" =~ ^[A-Za-z0-9_-]{16,}$ ]] || die "Could not generate AUTH_TOKEN"
   fi
   case "$token" in
     ''|*[!A-Za-z0-9_-]*) die "Refusing to store an empty or non-plain AUTH_TOKEN" ;;
@@ -80,8 +81,8 @@ DATA_DIR=$DATA
 BACKUPS=30
 BACKUP_MIN_INTERVAL_S=300
 TOMBSTONE_DAYS=60
-# What the TV opens (add &theme=dark for dark mode, &reload=6 = clean reload every N hours)
-KIOSK_URL=http://localhost:$PORT/?tv=1
+# What the TV opens. Sign in first, then show the board. (&theme=dark, &reload=6 still work on the next path.)
+KIOSK_URL=http://localhost:$PORT/login?next=/?tv=1
 # --- Optional overnight screen-off (placeholder, not active in v0.02) ---
 # SCREEN_OFF_AT=23:00
 # SCREEN_ON_AT=06:30
@@ -115,11 +116,39 @@ ensure_env_file() {
     chmod 600 "$ENV_FILE"
     printf '%s\n' "AUTH_TOKEN (shown once; store it; it will not be printed again): ${token}"
   fi
-  current="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
-  case "$current" in
-    127.0.0.1|localhost|::1|'') ;;
-    *) warn "HOST=${current} is not loopback. Left unchanged so existing clients keep working. The token is still required. Do not forward port ${PORT} off the LAN." ;;
+  if awk -F= '$1=="HOST"{found=1} END{exit found?0:1}' "$ENV_FILE"; then
+    current="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+    case "$current" in
+      127.0.0.1|localhost|::1) ;;
+      '') warn "HOST is blank in $ENV_FILE. Left unchanged. Phones will not connect until you set HOST=0.0.0.0 or one LAN address. The token is still required. Do not forward port ${PORT} off the LAN." ;;
+      *) warn "HOST=${current} is not loopback. Left unchanged so existing clients keep working. The token is still required. Do not forward port ${PORT} off the LAN." ;;
+    esac
+  else
+    warn "HOST is not set in $ENV_FILE. Left unchanged. This server defaults to 127.0.0.1, so phones that used the previous all-interfaces default will not connect until you add HOST=0.0.0.0 or one LAN address. The token is still required. Do not forward port ${PORT} off the LAN."
+  fi
+}
+
+write_kiosk_env() {
+  local port host url old_umask
+  port="$(awk -F= '$1=="PORT"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+  case "$port" in
+    ''|*[!0-9]*) port="$PORT" ;;
   esac
+  host="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
+  case "$host" in
+    ''|*[!A-Za-z0-9.:_-]*) host="" ;;
+  esac
+  url="http://localhost:${port}/login?next=/?tv=1"
+  old_umask="$(umask)"
+  umask 022
+  {
+    echo "# TV settings only. The board token stays in the mode 0600 env file."
+    echo "PORT=$port"
+    if [ -n "$host" ]; then echo "HOST=$host"; fi
+    echo "KIOSK_URL=$url"
+  } > "$KIOSK_ENV_FILE"
+  umask "$old_umask"
+  chmod 644 "$KIOSK_ENV_FILE"
 }
 
 file_auth_token() {
@@ -155,7 +184,7 @@ print_how_to_reach() {
   bind="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"
   echo
   say "Done! Kanban Board is installed."
-  echo "   TV:      opens by itself after a reboot  (sudo reboot)"
+  echo "   TV:      opens the sign-in page after a reboot (sudo reboot). Enter the token once; the board stays on the TV after that."
   case "$bind" in
     127.0.0.1|localhost|::1|'')
       echo "   Network: this board listens on loopback only. Other devices cannot open it until HOST in $ENV_FILE is set to all interfaces or one LAN address. The token is still required. Do not forward port $PORT off the LAN."
@@ -165,23 +194,25 @@ print_how_to_reach() {
       hostn="${KANBAN_HOSTNAME:-$(hostname)}"
       eth_ip="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
       all_ips="$(hostname -I 2>/dev/null || true)"
-      echo "   Phones:  on the same network, open one of these (the token is still required):"
-      [ -n "$eth_ip" ] && echo "              http://$eth_ip:$PORT        (Ethernet)"
+      echo "   Phones:  on the same network, open one of these and sign in:"
+      [ -n "$eth_ip" ] && echo "              http://$eth_ip:$PORT/login        (Ethernet)"
       for ip in $all_ips; do
-        case "$ip" in *:*|"$eth_ip") ;; *) echo "              http://$ip:$PORT";; esac
+        case "$ip" in *:*|"$eth_ip") ;; *) echo "              http://$ip:$PORT/login";; esac
       done
-      systemctl is-active --quiet avahi-daemon 2>/dev/null && echo "              http://$hostn.local:$PORT   (name-based; works on most phones)"
+      systemctl is-active --quiet avahi-daemon 2>/dev/null && echo "              http://$hostn.local:$PORT/login   (name-based; works on most phones)"
       [ -z "$eth_ip" ] && warn "eth0 has no IPv4 address yet. Is the Ethernet cable plugged in? (Wi-Fi also works.)"
       ;;
   esac
   echo "   Data:    $DATA/board.json  (backups in $DATA/backups)"
   echo "   Logs:    journalctl -u kanban -f"
-  echo "   Sign-in: open /login once in each browser. The token was printed when it was first written."
+  echo "   Sign-in: the TV opens /login on its own. Other browsers open /login once. The token was printed when it was first written."
 }
 
 if [ "${KANBAN_INSTALL_DRY_RUN:-0}" = 1 ]; then
   [ "$ENV_FILE" != /etc/kanban.env ] || die "Dry run needs KANBAN_ENV_FILE set to a temp path"
+  if [ -z "${KANBAN_KIOSK_ENV_FILE:-}" ]; then KIOSK_ENV_FILE="${ENV_FILE}.kiosk"; fi
   ensure_env_file
+  write_kiosk_env
   print_how_to_reach
   exit 0
 fi
@@ -248,9 +279,14 @@ install -d -m 750 -o kanban -g kanban "$DATA"   # board.json + backups live here
 chown -R root:root "$APP/public" "$APP/pi" "$APP/server.js"
 
 ensure_env_file
+write_kiosk_env
 
 # ---------- server service ----------
 say "Setting up kanban.service (starts at boot, restarts itself if it stops)"
+NODE_FLAGS="--lite-mode --max-old-space-size=32 --max-semi-space-size=1"
+if "$NODE_BIN" --no-expose-wasm -e 0 >/dev/null 2>&1; then
+  NODE_FLAGS="--no-expose-wasm $NODE_FLAGS"
+fi
 cat > "$UNIT" <<UNITEOF
 [Unit]
 Description=Kanban Board (Kanban server)
@@ -263,7 +299,7 @@ Group=kanban
 EnvironmentFile=-$ENV_FILE
 WorkingDirectory=$APP
 # Small-memory V8 settings: keeps the server around 30-50 MB RSS (no JIT needed for a tiny JSON API)
-ExecStart=$NODE_BIN --no-expose-wasm --lite-mode --max-old-space-size=32 --max-semi-space-size=1 $APP/server.js
+ExecStart=$NODE_BIN $NODE_FLAGS $APP/server.js
 Restart=always
 RestartSec=2
 MemoryMax=120M

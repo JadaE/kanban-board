@@ -281,7 +281,7 @@ const ServerStore=(function(){
   }
   async function req(method,url,body){
     const r=await fetch(url,{method,credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
-    if(r.status===401){if(location.pathname!=='/login')location.assign('/login');throw new Error('unauthorized');}
+    if(r.status===401){if(location.pathname!=='/login'){const next=(location.pathname||'/')+location.search;location.assign('/login?next='+encodeURIComponent(next.charAt(0)==='/'?next:'/'));}throw new Error('unauthorized');}
     let j=null;try{j=await r.json();}catch(_){}
     return {status:r.status,ok:r.ok,json:j};
   }

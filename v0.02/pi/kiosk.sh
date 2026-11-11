@@ -9,16 +9,17 @@ flock -n 9 || exit 0   # already running (several autostart hooks point here)
 PORT=8080
 KIOSK_URL=""
 HOST_BIND=""
-# Read only the TV settings. Do not source the env file: it holds the board token.
-if [ -r /etc/kanban.env ]; then
-  file_port="$(awk -F= '$1=="PORT"{print substr($0, index($0, "=") + 1); exit}' /etc/kanban.env)"
-  file_url="$(awk -F= '$1=="KIOSK_URL"{print substr($0, index($0, "=") + 1); exit}' /etc/kanban.env)"
-  file_host="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' /etc/kanban.env)"
+# Token-free settings. Do not read the secret env file from this script.
+KIOSK_ENV="${KANBAN_KIOSK_ENV:-/etc/kanban-kiosk.env}"
+if [ -r "$KIOSK_ENV" ]; then
+  file_port="$(awk -F= '$1=="PORT"{print substr($0, index($0, "=") + 1); exit}' "$KIOSK_ENV")"
+  file_url="$(awk -F= '$1=="KIOSK_URL"{print substr($0, index($0, "=") + 1); exit}' "$KIOSK_ENV")"
+  file_host="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$KIOSK_ENV")"
   [ -n "$file_port" ] && PORT="$file_port"
   [ -n "$file_url" ] && KIOSK_URL="$file_url"
   [ -n "$file_host" ] && HOST_BIND="$file_host"
 fi
-URL="${KIOSK_URL:-http://localhost:$PORT/?tv=1}"
+URL="${KIOSK_URL:-http://localhost:$PORT/login?next=/?tv=1}"
 case "$HOST_BIND" in
   ''|0.0.0.0|127.0.0.1|localhost|::|::1) HEALTH="http://127.0.0.1:$PORT/healthz" ;;
   *) HEALTH="http://$HOST_BIND:$PORT/healthz" ;;

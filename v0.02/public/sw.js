@@ -10,6 +10,6 @@ self.addEventListener('fetch',e=>{
   const req=e.request,u=new URL(req.url);
   if(req.method!=='GET'||u.origin!==self.location.origin||u.pathname.includes('/api/')||u.pathname.endsWith('/healthz')||u.pathname==='/login'||u.pathname.startsWith('/login/'))return;
   if(req.mode!=='navigate')return;
-  e.respondWith(fetch(req).then(r=>{if(r.ok){const cp=r.clone();caches.open(CACHE).then(c=>c.put('./',cp));}return r;})
+  e.respondWith(fetch(req).then(r=>{const finalPath=new URL(r.url).pathname;if(r.ok&&finalPath!=='/login'&&!finalPath.startsWith('/login/')){const cp=r.clone();caches.open(CACHE).then(c=>c.put('./',cp));}return r;})
     .catch(()=>caches.match('./').then(r=>r||new Response('Board server unreachable',{status:503,headers:{'Content-Type':'text/plain'}}))));
 });

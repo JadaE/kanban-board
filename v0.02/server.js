@@ -73,6 +73,25 @@ function loginCookie(token, secure) {
   return parts.join('; ');
 }
 
+/* Same-origin path only. Anything else (absolute URL, //host, backslash, scheme) becomes /. */
+function safeNext(raw) {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return '/';
+  let value;
+  try { value = decodeURIComponent(raw); } catch (_) { return '/'; }
+  if (value.length === 0 || value.length > 2048 || value[0] !== '/') return '/';
+  if (value.startsWith('//') || value.startsWith('/\\')) return '/';
+  if (value.includes('\\') || value.includes('://')) return '/';
+  if (/[\u0000-\u001f\u007f\s]/.test(value)) return '/';
+  if (/%2f|%5c/i.test(value)) return '/';
+  const pathPart = value.split('?')[0];
+  if (pathPart.includes(':')) return '/';
+  return value;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
 function cookieValue(header, name) {
   if (typeof header !== 'string' || header.length === 0) return '';
   for (const part of header.split(';')) {
@@ -205,7 +224,20 @@ function send(res, code, obj, headers) {
 }
 function unauthorized(req, res) {
   if (req && req.readable) req.resume();
+  if (req && req.method === 'HEAD') {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': 0 });
+    res.end();
+    return;
+  }
   return send(res, 401, { error: 'unauthorized' });
+}
+function redirectTo(res, location, extra) {
+  res.writeHead(302, Object.assign({ Location: location, 'Cache-Control': 'no-store', 'Content-Length': 0 }, extra || {}));
+  res.end();
+}
+function redirectToLogin(res, url) {
+  const next = safeNext(url.pathname + url.search);
+  redirectTo(res, '/login?next=' + encodeURIComponent(next));
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -229,14 +261,20 @@ function serveStatic(req, res, pathname) {
   if (file !== PUBLIC_DIR && !file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, { error: 'forbidden' });
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) return send(res, 404, { error: 'not found' });
-    res.writeHead(200, { 'Content-Type': TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Content-Length': st.size,
-      'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    const headers = { 'Content-Type': TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Content-Length': st.size,
+      'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' };
+    if (pathname === '/' || pathname === '/index.html' || pathname.endsWith('.html')) {
+      headers['Set-Cookie'] = loginCookie(expectedToken, !!(req.socket && req.socket.encrypted));
+    }
+    res.writeHead(200, headers);
     if (req.method === 'HEAD') return res.end();
     fs.createReadStream(file).pipe(res);
   });
 }
 
-const LOGIN_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kanban login</title></head>\n<body>\n<form method="post" action="/login">\n<label>Token <input name="token" type="password" autocomplete="current-password" maxlength="256" required></label>\n<button type="submit">Sign in</button>\n</form>\n</body>\n</html>\n';
+function loginPage(next) {
+  return '<!DOCTYPE html>\n<html lang="en">\n<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kanban login</title></head>\n<body>\n<form method="post" action="/login">\n<input type="hidden" name="next" value="' + escapeHtml(next) + '">\n<label>Token <input name="token" type="password" autocomplete="current-password" maxlength="256" required></label>\n<button type="submit">Sign in</button>\n</form>\n</body>\n</html>\n';
+}
 
 function readRaw(req, limit) {
   return new Promise((resolve, reject) => {
@@ -262,54 +300,56 @@ function readRaw(req, limit) {
   });
 }
 
-function tokenFromLoginBody(raw, contentType) {
-  if (raw == null) return '';
+function loginRequestFields(raw, contentType) {
+  const out = { token: '', next: '' };
+  if (raw == null) return out;
   const ct = String(contentType || '').toLowerCase();
   if (ct.includes('application/json')) {
     try {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.token === 'string') return parsed.token;
-      if (parsed && typeof parsed.password === 'string') return parsed.password;
-    } catch (_) { return ''; }
-    return '';
+      if (parsed && typeof parsed.token === 'string') out.token = parsed.token;
+      else if (parsed && typeof parsed.password === 'string') out.token = parsed.password;
+      if (parsed && typeof parsed.next === 'string') out.next = parsed.next;
+    } catch (_) {}
+    return out;
   }
   if (ct.includes('application/x-www-form-urlencoded') || raw.includes('=')) {
     const params = new URLSearchParams(raw);
     const token = params.get('token');
-    if (typeof token === 'string' && token.length > 0) return token;
     const password = params.get('password');
-    if (typeof password === 'string' && password.length > 0) return password;
-    return '';
+    if (typeof token === 'string' && token.length > 0) out.token = token;
+    else if (typeof password === 'string' && password.length > 0) out.token = password;
+    const next = params.get('next');
+    if (typeof next === 'string') out.next = next;
+    return out;
   }
   const line = raw.replace(/\r?\n$/, '');
-  if (line && !line.includes('\n') && !line.includes('\r')) return line;
-  return '';
+  if (line && !line.includes('\n') && !line.includes('\r')) out.token = line;
+  return out;
 }
 
-function handleLogin(req, res, method) {
+function handleLogin(req, res, method, url) {
+  const secure = !!(req.socket && req.socket.encrypted);
   if (method === 'GET' || method === 'HEAD') {
+    const next = safeNext(url.searchParams.get('next') || '');
+    if (requestAuthorized(req)) return redirectTo(res, next, { 'Set-Cookie': loginCookie(expectedToken, secure) });
+    const html = loginPage(next);
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
-      'Content-Length': Buffer.byteLength(LOGIN_HTML),
+      'Content-Length': Buffer.byteLength(html),
       'X-Content-Type-Options': 'nosniff'
     });
-    res.end(method === 'HEAD' ? undefined : LOGIN_HTML);
+    res.end(method === 'HEAD' ? undefined : html);
     return;
   }
   return readRaw(req, LOGIN_BODY_MAX).then(raw => {
     if (res.headersSent) return;
     if (raw == null) return unauthorized(req, res);
-    const presented = tokenFromLoginBody(raw, req.headers['content-type']);
-    if (!safeEqual(presented, expectedToken)) return unauthorized(req, res);
-    const secure = !!(req.socket && req.socket.encrypted);
-    res.writeHead(302, {
-      Location: '/',
-      'Set-Cookie': loginCookie(expectedToken, secure),
-      'Cache-Control': 'no-store',
-      'Content-Length': 0
-    });
-    res.end();
+    const fields = loginRequestFields(raw, req.headers['content-type']);
+    if (!safeEqual(fields.token, expectedToken)) return unauthorized(req, res);
+    const next = safeNext(fields.next || url.searchParams.get('next') || '');
+    redirectTo(res, next, { 'Set-Cookie': loginCookie(expectedToken, secure) });
   }).catch(() => {
     if (!res.headersSent) unauthorized(req, res);
   });
@@ -323,8 +363,11 @@ async function handle(req, res) {
   const p = url.pathname;
   const m = req.method;
 
-  if (p === '/login' && (m === 'GET' || m === 'HEAD' || m === 'POST')) return handleLogin(req, res, m);
-  if (!requestAuthorized(req)) return unauthorized(req, res);
+  if (p === '/login' && (m === 'GET' || m === 'HEAD' || m === 'POST')) return handleLogin(req, res, m, url);
+  if (!requestAuthorized(req)) {
+    if ((m === 'GET' || m === 'HEAD') && (p === '/' || p === '/index.html')) return redirectToLogin(res, url);
+    return unauthorized(req, res);
+  }
 
   if (p === '/healthz') return send(res, 200, { ok: true, version: VERSION, rev: board.rev, cards: board.cards.filter(c => !c.deleted).length, clients: clients.size, uptimeS: Math.round(process.uptime()), serverTime: Date.now() });
 

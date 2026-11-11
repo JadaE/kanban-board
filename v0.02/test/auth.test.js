@@ -245,8 +245,6 @@ function countToken(text, secret) {
         ['DELETE', '/api/card/c1', JSON.stringify({updatedAt: 11})],
         ['PUT', '/api/meta', JSON.stringify({tagColors: {}, updatedAt: 1})],
         ['GET', '/healthz'],
-        ['GET', '/'],
-        ['HEAD', '/'],
         ['GET', '/sw.js']
       ];
       for (const [method, reqPath, body] of paths) {
@@ -261,6 +259,14 @@ function countToken(text, secret) {
       assert(sse.status === 401 && sse.body === UNAUTHORIZED, 'SSE without a token status ' + sse.status);
       assert(!String(sse.headers['content-type'] || '').includes('text/event-stream'), 'SSE stream started');
       assert(!sse.body.includes('event:'), 'SSE event leaked');
+      const headApi = await request(port, 'HEAD', '/api/board');
+      const headHealth = await request(port, 'HEAD', '/healthz');
+      assert(headApi.status === 401 && headApi.body === '', 'HEAD API sent a body');
+      assert(headHealth.status === 401 && headHealth.body === '', 'HEAD health sent a body');
+      const htmlApi = await request(port, 'GET', '/api/board', {headers: {Accept: 'text/html'}});
+      const htmlHealth = await request(port, 'GET', '/healthz', {headers: {Accept: 'text/html'}});
+      assert(htmlApi.status === 401 && htmlApi.body === UNAUTHORIZED, 'API document redirect');
+      assert(htmlHealth.status === 401 && htmlHealth.body === UNAUTHORIZED, 'health document redirect');
     });
 
     await check('wrong header and wrong cookie share the missing-token body', async () => {
@@ -282,6 +288,9 @@ function countToken(text, secret) {
       assert(health.status === 200 && JSON.parse(health.body).ok === true, 'health ' + health.status);
       const page = await request(port, 'GET', '/', {headers: auth});
       assert(page.status === 200 && page.body.includes('<title>Kanban Board</title>'), 'board page ' + page.status);
+      const refreshed = cookieFlags([].concat(page.headers['set-cookie'] || [])[0]);
+      assert(refreshed.value === TOKEN, 'page load did not refresh the cookie');
+      assert(refreshed.parts.some(p => p === 'Max-Age=31536000'), 'refreshed cookie dropped Max-Age');
       const asset = await request(port, 'GET', '/sw.js', {headers: auth});
       assert(asset.status === 200 && asset.body.includes('/login'), 'asset ' + asset.status);
       const put = await request(port, 'PUT', '/api/card/c1', {headers: Object.assign({'Content-Type': 'application/json'}, auth), body: JSON.stringify(board)});
@@ -329,6 +338,35 @@ function countToken(text, secret) {
       assert(huge.status === 401 && huge.body === UNAUTHORIZED && !huge.headers['set-cookie'], 'over-long login body ' + huge.status);
       const still = await request(port, 'GET', '/healthz', {headers: auth});
       assert(still.status === 200, 'server died after a large login');
+    });
+
+    await check('TV visit reaches login and comes back to /?tv=1', async () => {
+      const tv = await request(port, 'GET', '/?tv=1');
+      assert(tv.status === 302 && tv.body === '', 'TV status ' + tv.status);
+      const loc = tv.headers.location || '';
+      assert(loc.indexOf('/login?next=') === 0, 'TV did not redirect to login');
+      const next = new URL(loc, 'http://127.0.0.1').searchParams.get('next');
+      assert(next === '/?tv=1', 'TV next was not kept');
+      const form = await request(port, 'GET', loc);
+      assert(form.status === 200 && form.body.includes('type="password"') && form.body.includes('name="next"'), 'login form missing');
+      assert(form.body.includes('value="/?tv=1"'), 'form dropped the TV path');
+      const posted = await request(port, 'POST', '/login', {headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'token=' + encodeURIComponent(TOKEN) + '&next=' + encodeURIComponent('/?tv=1')});
+      assert(posted.status === 302 && posted.headers.location === '/?tv=1', 'login did not return to the TV');
+      const cookie = 'kanban_token=' + encodeURIComponent(TOKEN);
+      const skip = await request(port, 'GET', '/login?next=' + encodeURIComponent('/?tv=1'), {headers: {Cookie: cookie}});
+      assert(skip.status === 302 && skip.headers.location === '/?tv=1' && skip.body === '', 'signed-in login did not skip the form');
+      assert(!skip.body.includes('<form'), 'form shown with a valid cookie');
+      assert(cookieFlags([].concat(skip.headers['set-cookie'] || [])[0]).value === TOKEN, 'skip did not refresh the cookie');
+      const skipBad = await request(port, 'GET', '/login?next=' + encodeURIComponent('//evil.example'), {headers: {Cookie: cookie}});
+      assert(skipBad.status === 302 && skipBad.headers.location === '/', 'signed-in open redirect');
+      const attacks = ['https://evil.example/board', 'http://evil.example', '//evil.example', '/\\evil.example', 'javascript:alert(1)', '%2F%2Fevil.example'];
+      for (const attack of attacks) {
+        const badNext = await request(port, 'POST', '/login', {headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'token=' + encodeURIComponent(TOKEN) + '&next=' + encodeURIComponent(attack)});
+        assert(badNext.status === 302 && badNext.headers.location === '/', 'unsafe next was honored');
+        assert(!String(badNext.headers.location).includes('evil') && !String(badNext.headers.location).includes('javascript'), 'unsafe location');
+      }
+      const headTv = await request(port, 'HEAD', '/?tv=1');
+      assert(headTv.status === 302 && headTv.body === '', 'HEAD TV sent a body');
     });
 
     await check('server logs do not include the token', async () => {
@@ -391,7 +429,7 @@ function countToken(text, secret) {
     assert(src.includes('openssl rand -hex 16'), 'installer does not generate a token');
     assert(!/^HOST=0\.0\.0\.0$/m.test(src), 'installer still hard-codes an all-interfaces bind');
     const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-openssl-'));
-    const stubToken = '0123456789abcdef0123456789abcdef';
+    const stubToken = 'test-token-not-a-secret';
     fs.writeFileSync(path.join(stubDir, 'openssl'), '#!/bin/sh\nif [ "$1" = "rand" ] && [ "$2" = "-hex" ] && [ "$3" = "16" ]; then\n  printf "%s\\n" "' + stubToken + '"\n  exit 0\nfi\necho unexpected >&2\nexit 1\n', {mode: 0o755});
     function dry(envFile, env) {
       return runs([script], Object.assign({
@@ -407,10 +445,16 @@ function countToken(text, secret) {
     assert(freshText.split('\n').includes('HOST=127.0.0.1'), 'new env did not use loopback');
     assert(!freshText.split('\n').includes('HOST=0.0.0.0'), 'new env wrote an all-interfaces bind');
     assert(freshText.includes('AUTH_TOKEN=' + TOKEN), 'supplied token was not stored');
+    assert(freshText.includes('http://localhost:8080/login?next=/?tv=1'), 'TV URL is not the sign-in page');
     assert((fs.statSync(fresh).mode & 0o777) === 0o600, 'new env mode ' + (fs.statSync(fresh).mode & 0o777).toString(8));
     assert(countToken(created.stdout, TOKEN) === 1, 'token printed ' + countToken(created.stdout, TOKEN) + ' times');
     assert(!/http:\/\/\d+\.\d+\.\d+\.\d+/.test(created.stdout), 'loopback install advertised a network URL');
     assert(!created.stdout.includes(stubToken) && !created.stderr.includes(stubToken), 'generator ran when a token was supplied');
+    const freshKiosk = fs.readFileSync(fresh + '.kiosk', 'utf8');
+    assert((fs.statSync(fresh + '.kiosk').mode & 0o777) === 0o644, 'kiosk settings mode');
+    assert(freshKiosk.includes('PORT=8080') && freshKiosk.includes('HOST=127.0.0.1'), 'kiosk settings missing port or host');
+    assert(freshKiosk.includes('http://localhost:8080/login?next=/?tv=1'), 'kiosk URL is not the sign-in page');
+    assert(!freshKiosk.includes('AUTH_TOKEN') && !freshKiosk.includes(TOKEN), 'kiosk settings contain a token');
 
     const generatedFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
     const generated = dry(generatedFile, {});
@@ -425,6 +469,7 @@ function countToken(text, secret) {
     const opt = dry(opted, {AUTH_TOKEN: TOKEN, HOST: '0.0.0.0'});
     assert(opt.status === 0, 'opt-in dry-run failed');
     assert(fs.readFileSync(opted, 'utf8').split('\n').includes('HOST=0.0.0.0'), 'supplied all-interfaces bind was not written');
+    assert(opt.stdout.includes('/login'), 'phone URL missing sign-in path');
 
     const kept = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
     fs.writeFileSync(kept, 'PORT=9090\nHOST=0.0.0.0\nDATA_DIR=/tmp/kanban-data\n', {mode: 0o644});
@@ -439,6 +484,10 @@ function countToken(text, secret) {
     assert(again.stderr.includes('Left unchanged'), 'upgrade did not warn about HOST');
     assert(countToken(again.stdout, OTHER) === 1, 'upgrade token printed ' + countToken(again.stdout, OTHER) + ' times');
     assert(countToken(again.stdout, stubToken) === 0, 'upgrade generated a token while one was supplied');
+    const keptKiosk = fs.readFileSync(kept + '.kiosk', 'utf8');
+    assert(keptKiosk.includes('PORT=9090') && keptKiosk.includes('HOST=0.0.0.0'), 'kiosk settings were not refreshed');
+    assert(keptKiosk.includes('http://localhost:9090/login?next=/?tv=1'), 'upgraded kiosk URL');
+    assert(!keptKiosk.includes('AUTH_TOKEN') && !keptKiosk.includes(OTHER), 'kiosk settings contain a token');
 
     const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
     fs.writeFileSync(missing, 'HOST=192.0.2.10\nPORT=8080\n', {mode: 0o644});
@@ -461,6 +510,18 @@ function countToken(text, secret) {
     assert(countToken(same.stdout, TOKEN) === 0 && countToken(same.stdout, OTHER) === 0, 'existing token was printed again');
     assert((fs.statSync(stable).mode & 0o777) === 0o600, 'existing env mode was not tightened');
 
+    const noHost = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
+    fs.writeFileSync(noHost, 'PORT=8080\nAUTH_TOKEN=' + TOKEN + '\n', {mode: 0o644});
+    const warned = dry(noHost, {});
+    assert(warned.status === 0, 'missing HOST dry-run failed');
+    const noHostText = fs.readFileSync(noHost, 'utf8');
+    assert(!/^HOST=/m.test(noHostText), 'missing HOST line was added');
+    assert(warned.stderr.includes('HOST is not set'), 'missing HOST was not warned');
+    assert(warned.stderr.toLowerCase().includes('phones'), 'warning did not explain phones');
+    const noHostKiosk = fs.readFileSync(noHost + '.kiosk', 'utf8');
+    assert(!/^HOST=/m.test(noHostKiosk), 'kiosk file invented a HOST');
+    assert(!noHostKiosk.includes(TOKEN) && !noHostKiosk.includes('AUTH_TOKEN'), 'kiosk file contains a token');
+
     const bad = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
     const refused = dry(bad, {AUTH_TOKEN: 'fake token'});
     assert(refused.status !== 0, 'unsafe token was stored');
@@ -480,6 +541,15 @@ function countToken(text, secret) {
     assert(ignore.includes('config.local.json'), 'config.local.json is not gitignored');
     const page = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
     assert(page.includes("credentials:'same-origin'"), 'fetch does not send the cookie');
+    assert(page.includes('login?next='), 'expired session does not keep the TV path');
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    assert(readme.includes('/login?next=/?tv=1'), 'README does not point the TV at sign-in');
+    assert(!readme.includes('comes up on the board by itself'), 'README still says the TV skips sign-in');
+    const kiosk = fs.readFileSync(path.join(ROOT, 'pi', 'kiosk.sh'), 'utf8');
+    assert(kiosk.includes('/etc/kanban-kiosk.env'), 'kiosk does not read the token-free settings');
+    assert(!kiosk.includes('/etc/kanban.env'), 'kiosk still reads the secret env file');
+    const installer = fs.readFileSync(path.join(ROOT, 'pi', 'install.sh'), 'utf8');
+    assert(installer.includes('--no-expose-wasm -e 0'), 'wasm flag is not probed');
     const sw = fs.readFileSync(path.join(ROOT, 'public', 'sw.js'), 'utf8');
     assert(sw.includes("u.pathname==='/login'"), 'service worker can answer /login from cache');
     assert(sw.includes("u.pathname.includes('/api/')"), 'service worker can answer /api from cache');
