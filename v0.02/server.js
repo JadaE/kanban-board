@@ -25,7 +25,13 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 const DEFAULT_HOST = '127.0.0.1';
 const HOST = process.env.HOST || DEFAULT_HOST;
 const MAX_TOKEN_CHARS = 256;
+const MIN_TOKEN_CHARS = 32;
 const LOGIN_BODY_MAX = 4096;
+const LOGIN_WINDOW_MS = 60 * 1000;
+const LOGIN_MAX = 24;
+const DENY_WINDOW_MS = 60 * 1000;
+const DENY_MAX = 48;
+const MAX_RATE_IPS = 128;
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || path.join(__dirname, 'public'));
 const BACKUPS = Math.max(0, parseInt(process.env.BACKUPS || '30', 10));
@@ -119,6 +125,68 @@ function requestAuthorized(req) {
   const fromCookie = cookieValue(req.headers.cookie, 'kanban_token');
   if (!fromCookie) return false;
   return safeEqual(fromCookie, expectedToken);
+}
+
+/* Per-IP sliding windows. Each IP keeps at most LOGIN_MAX and DENY_MAX timestamps,
+   and the map itself keeps at most MAX_RATE_IPS entries. */
+const rateBuckets = new Map();
+
+function clientIp(req) {
+  const raw = req && req.socket && req.socket.remoteAddress;
+  return typeof raw === 'string' && raw.length > 0 ? raw : 'unknown';
+}
+
+function rateBucket(ip) {
+  const existing = rateBuckets.get(ip);
+  if (existing) {
+    rateBuckets.delete(ip);
+    rateBuckets.set(ip, existing);
+    return existing;
+  }
+  while (rateBuckets.size >= MAX_RATE_IPS) {
+    const oldest = rateBuckets.keys().next().value;
+    rateBuckets.delete(oldest);
+  }
+  const created = { login: [], denied: [] };
+  rateBuckets.set(ip, created);
+  return created;
+}
+
+function pruneTimes(list, now, windowMs) {
+  const cutoff = now - windowMs;
+  let drop = 0;
+  while (drop < list.length && list[drop] <= cutoff) drop++;
+  if (drop > 0) list.splice(0, drop);
+}
+
+function limited(ip, kind, now) {
+  const bucket = rateBuckets.get(ip);
+  if (!bucket) return false;
+  const login = kind === 'login';
+  const list = login ? bucket.login : bucket.denied;
+  pruneTimes(list, now, login ? LOGIN_WINDOW_MS : DENY_WINDOW_MS);
+  return list.length >= (login ? LOGIN_MAX : DENY_MAX);
+}
+
+function mark(ip, kind, now) {
+  const bucket = rateBucket(ip);
+  const list = kind === 'login' ? bucket.login : bucket.denied;
+  const max = kind === 'login' ? LOGIN_MAX : DENY_MAX;
+  list.push(now);
+  if (list.length > max) list.splice(0, list.length - max);
+}
+
+function send429(req, res) {
+  const body = '{"error":"too many requests"}';
+  if (req && req.readable) req.resume();
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '60' };
+  if (req && req.method === 'HEAD') {
+    res.writeHead(429, Object.assign(headers, { 'Content-Length': 0 }));
+    res.end();
+    return;
+  }
+  res.writeHead(429, Object.assign(headers, { 'Content-Length': Buffer.byteLength(body) }));
+  res.end(body);
 }
 
 /* ---------- storage ---------- */
@@ -223,6 +291,10 @@ function send(res, code, obj, headers) {
   res.end(body);
 }
 function unauthorized(req, res) {
+  const now = Date.now();
+  const ip = clientIp(req);
+  if (limited(ip, 'denied', now)) return send429(req, res);
+  mark(ip, 'denied', now);
   if (req && req.readable) req.resume();
   if (req && req.method === 'HEAD') {
     res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': 0 });
@@ -343,6 +415,16 @@ function handleLogin(req, res, method, url) {
     res.end(method === 'HEAD' ? undefined : html);
     return;
   }
+  const now = Date.now();
+  const ip = clientIp(req);
+  if (limited(ip, 'login', now)) {
+    return readRaw(req, LOGIN_BODY_MAX).then(() => {
+      if (!res.headersSent) send429(req, res);
+    }).catch(() => {
+      if (!res.headersSent) send429(req, res);
+    });
+  }
+  mark(ip, 'login', now);
   return readRaw(req, LOGIN_BODY_MAX).then(raw => {
     if (res.headersSent) return;
     if (raw == null) return unauthorized(req, res);
@@ -445,14 +527,15 @@ function pathOnly(url) {
   return q < 0 ? value : value.slice(0, q);
 }
 
-function failClosed() {
-  try { fs.writeSync(2, 'AUTH_TOKEN not set\n'); } catch (_) {}
+function failClosed(message) {
+  try { fs.writeSync(2, message + '\n'); } catch (_) {}
   process.exit(1);
 }
 
 function main() {
   const token = configuredToken();
-  if (!token || token.length > MAX_TOKEN_CHARS) failClosed();
+  if (!token || token.length > MAX_TOKEN_CHARS) failClosed('AUTH_TOKEN not set');
+  if (token.length < MIN_TOKEN_CHARS) failClosed('AUTH_TOKEN is too short');
   expectedToken = token;
   loadBoard();
   startHousekeeping();
@@ -478,6 +561,6 @@ function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-module.exports = { safeEqual, loginCookie, DEFAULT_HOST, MAX_TOKEN_CHARS };
+module.exports = { safeEqual, loginCookie, DEFAULT_HOST, MAX_TOKEN_CHARS, MIN_TOKEN_CHARS, LOGIN_MAX, DENY_MAX };
 
 if (require.main === module) main();

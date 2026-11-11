@@ -21,12 +21,12 @@ You need Node.js 18 or newer. The server refuses to start until a shared token i
 
 ```bash
 cd v0.02
-AUTH_TOKEN=replace-me node server.js
+AUTH_TOKEN=replace-me-with-a-long-random-token node server.js
 # sign in:                 http://127.0.0.1:8080/login
 # TV view, after sign-in:  http://127.0.0.1:8080/?tv=1   (add &theme=dark for dark mode)
 ```
 
-`replace-me` is a placeholder. Choose a long random token and do not commit it. `KANBAN_TOKEN` is accepted when `AUTH_TOKEN` is unset. The default bind address is `127.0.0.1` (this machine only). Set `HOST=0.0.0.0`, or one LAN address, only when other devices should open the board. The token is still required, and port 8080 should not be forwarded off the LAN.
+`replace-me-with-a-long-random-token` is a placeholder. Choose a random token of at least 32 characters and do not commit it. The server refuses to start with a shorter one. `KANBAN_TOKEN` is accepted when `AUTH_TOKEN` is unset. The default bind address is `127.0.0.1` (this machine only). Set `HOST=0.0.0.0`, or one LAN address, only when other devices should open the board. The token is still required, and port 8080 should not be forwarded off the LAN. A new token is printed only when the installer is attached to a terminal; otherwise the installer prints the path of the mode `0600` env file. Repeated wrong guesses get `429`.
 
 Opening `public/index.html` straight from disk (no server) still works like v0.01: the board is saved in that browser only.
 

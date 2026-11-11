@@ -3,7 +3,7 @@
 const {chromium}=require(process.env.PW||'playwright-core');
 const {spawn,spawnSync}=require('child_process');const fs=require('fs');const path=require('path');const http=require('http');
 const ROOT=path.resolve(__dirname,'..');const PORT=process.env.TEST_PORT||'8099';const BASE=`http://localhost:${PORT}/`;
-const TOKEN='fake-test-token';
+const TOKEN='fake-test-token-not-a-secret-xxx';
 const DATA=fs.mkdtempSync('/tmp/kanban-test-');const SHOTS=path.join(ROOT,'screenshots');fs.mkdirSync(SHOTS,{recursive:true});
 let srv=null;const results=[];const consoleErrors=[];const expectedNetErrors=[];let phase='normal';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));

@@ -56,12 +56,22 @@ pick_token() {
     token="$KANBAN_TOKEN"
   else
     token="$(openssl rand -hex 16)" || die "Could not generate AUTH_TOKEN"
-    [[ "$token" =~ ^[A-Za-z0-9_-]{16,}$ ]] || die "Could not generate AUTH_TOKEN"
+    [[ "$token" =~ ^[A-Za-z0-9_-]{32,}$ ]] || die "Could not generate AUTH_TOKEN"
   fi
   case "$token" in
     ''|*[!A-Za-z0-9_-]*) die "Refusing to store an empty or non-plain AUTH_TOKEN" ;;
   esac
+  if [ "${#token}" -lt 32 ]; then die "Refusing to store a short AUTH_TOKEN"; fi
   printf '%s' "$token"
+}
+
+print_new_token() {
+  # A pipe or log is not a terminal: print the file path only, never the token.
+  if [ -t 1 ]; then
+    printf '%s\n' "AUTH_TOKEN (shown once; store it; it will not be printed again): ${1}"
+  else
+    printf '%s\n' "$ENV_FILE"
+  fi
 }
 
 write_new_env_file() {
@@ -102,7 +112,7 @@ ensure_env_file() {
       ''|*[!A-Za-z0-9.:_-]*) die "HOST is not a plain address" ;;
     esac
     write_new_env_file "$ENV_FILE" "$token" "$host"
-    printf '%s\n' "AUTH_TOKEN (shown once; store it; it will not be printed again): ${token}"
+    print_new_token "$token"
     return
   fi
   chmod 600 "$ENV_FILE"
@@ -114,7 +124,7 @@ ensure_env_file() {
     printf '\nAUTH_TOKEN=%s\n' "$token" >> "$ENV_FILE"
     umask "$old_umask"
     chmod 600 "$ENV_FILE"
-    printf '%s\n' "AUTH_TOKEN (shown once; store it; it will not be printed again): ${token}"
+    print_new_token "$token"
   fi
   if awk -F= '$1=="HOST"{found=1} END{exit found?0:1}' "$ENV_FILE"; then
     current="$(awk -F= '$1=="HOST"{print substr($0, index($0, "=") + 1); exit}' "$ENV_FILE")"

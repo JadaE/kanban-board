@@ -7,13 +7,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {spawn, spawnSync} = require('child_process');
-const {safeEqual, loginCookie, DEFAULT_HOST, MAX_TOKEN_CHARS} = require('../server.js');
+const {safeEqual, loginCookie, DEFAULT_HOST, MAX_TOKEN_CHARS, MIN_TOKEN_CHARS, LOGIN_MAX, DENY_MAX} = require('../server.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const SERVER = path.join(ROOT, 'server.js');
-const TOKEN = 'fake-test-token';
-const OTHER = 'other-fake-token';
-const WRONG = 'wrong-test-token';
+const TOKEN = 'fake-test-token-not-a-secret-xxx';
+const OTHER = 'other-fake-token-not-a-secret-xx';
+const WRONG = 'wrong-test-token-not-a-secret-xx';
 const UNAUTHORIZED = '{"error":"unauthorized"}';
 const results = [];
 
@@ -185,6 +185,33 @@ function runs(args, env) {
   return spawnSync('bash', args, {env: childEnv(env), encoding: 'utf8'});
 }
 
+function runPty(extra) {
+  const script = [
+    'import os, pty, subprocess, sys',
+    'master, slave = pty.openpty()',
+    'env = os.environ.copy()',
+    'proc = subprocess.Popen(["bash", env["INSTALL_SH"]], stdin=slave, stdout=slave, stderr=subprocess.PIPE, env=env, close_fds=True)',
+    'os.close(slave)',
+    'chunks = []',
+    'while True:',
+    '    try:',
+    '        data = os.read(master, 4096)',
+    '    except OSError:',
+    '        break',
+    '    if not data:',
+    '        break',
+    '    chunks.append(data)',
+    'os.close(master)',
+    'err = proc.stderr.read()',
+    'rc = proc.wait()',
+    'sys.stdout.buffer.write(b"".join(chunks))',
+    'sys.stderr.buffer.write(err)',
+    'sys.exit(rc)'
+  ].join('\n');
+  const env = childEnv(Object.assign({INSTALL_SH: path.join(ROOT, 'pi', 'install.sh')}, extra));
+  return spawnSync('python3', ['-c', script], {env, encoding: 'utf8'});
+}
+
 function countToken(text, secret) {
   if (!secret) return 0;
   return text.split(secret).length - 1;
@@ -228,6 +255,13 @@ function countToken(text, secret) {
     assert(over.err.includes('AUTH_TOKEN not set'), 'over-long token log mismatch');
     assert(!over.out.includes(huge) && !over.err.includes(huge), 'configured token was logged');
     fs.rmSync(over.dir, {recursive: true, force: true});
+    const short = 'short-token';
+    const tooShort = await failStart({AUTH_TOKEN: short});
+    assert(tooShort.code !== 0 && tooShort.listened === false, 'short token was accepted');
+    assert(tooShort.err.includes('AUTH_TOKEN is too short'), 'short token was not refused');
+    assert(!tooShort.out.includes(short) && !tooShort.err.includes(short), 'short token was logged');
+    assert(short.length < MIN_TOKEN_CHARS, 'fixture is not short');
+    fs.rmSync(tooShort.dir, {recursive: true, force: true});
   });
 
   const port = await freePort();
@@ -429,7 +463,7 @@ function countToken(text, secret) {
     assert(src.includes('openssl rand -hex 16'), 'installer does not generate a token');
     assert(!/^HOST=0\.0\.0\.0$/m.test(src), 'installer still hard-codes an all-interfaces bind');
     const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-openssl-'));
-    const stubToken = 'test-token-not-a-secret';
+    const stubToken = 'test-token-not-a-secret-paddingx';
     fs.writeFileSync(path.join(stubDir, 'openssl'), '#!/bin/sh\nif [ "$1" = "rand" ] && [ "$2" = "-hex" ] && [ "$3" = "16" ]; then\n  printf "%s\\n" "' + stubToken + '"\n  exit 0\nfi\necho unexpected >&2\nexit 1\n', {mode: 0o755});
     function dry(envFile, env) {
       return runs([script], Object.assign({
@@ -447,7 +481,9 @@ function countToken(text, secret) {
     assert(freshText.includes('AUTH_TOKEN=' + TOKEN), 'supplied token was not stored');
     assert(freshText.includes('http://localhost:8080/login?next=/?tv=1'), 'TV URL is not the sign-in page');
     assert((fs.statSync(fresh).mode & 0o777) === 0o600, 'new env mode ' + (fs.statSync(fresh).mode & 0o777).toString(8));
-    assert(countToken(created.stdout, TOKEN) === 1, 'token printed ' + countToken(created.stdout, TOKEN) + ' times');
+    assert(countToken(created.stdout, TOKEN) === 0, 'token printed ' + countToken(created.stdout, TOKEN) + ' times');
+    assert(created.stdout.includes(fresh), 'non-interactive install did not print the env path');
+    assert(!created.stderr.includes(TOKEN), 'token printed on stderr');
     assert(!/http:\/\/\d+\.\d+\.\d+\.\d+/.test(created.stdout), 'loopback install advertised a network URL');
     assert(!created.stdout.includes(stubToken) && !created.stderr.includes(stubToken), 'generator ran when a token was supplied');
     const freshKiosk = fs.readFileSync(fresh + '.kiosk', 'utf8');
@@ -462,7 +498,8 @@ function countToken(text, secret) {
     const generatedText = fs.readFileSync(generatedFile, 'utf8');
     assert(generatedText.includes('AUTH_TOKEN=' + stubToken), 'generated token was not the test stub');
     assert(generatedText.split('\n').includes('HOST=127.0.0.1'), 'generated env did not use loopback');
-    assert(countToken(generated.stdout, stubToken) === 1, 'generated token printed ' + countToken(generated.stdout, stubToken) + ' times');
+    assert(countToken(generated.stdout, stubToken) === 0, 'generated token printed ' + countToken(generated.stdout, stubToken) + ' times');
+    assert(generated.stdout.includes(generatedFile), 'non-interactive generate did not print the env path');
     assert(!/http:\/\/\d+\.\d+\.\d+\.\d+/.test(generated.stdout), 'generated install advertised a network URL');
 
     const opted = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
@@ -482,7 +519,8 @@ function countToken(text, secret) {
     assert(!keptText.includes(stubToken), 'upgrade ignored a supplied token and generated one');
     assert((fs.statSync(kept).mode & 0o777) === 0o600, 'upgrade mode ' + (fs.statSync(kept).mode & 0o777).toString(8));
     assert(again.stderr.includes('Left unchanged'), 'upgrade did not warn about HOST');
-    assert(countToken(again.stdout, OTHER) === 1, 'upgrade token printed ' + countToken(again.stdout, OTHER) + ' times');
+    assert(countToken(again.stdout, OTHER) === 0, 'upgrade token printed ' + countToken(again.stdout, OTHER) + ' times');
+    assert(again.stdout.includes(kept), 'non-interactive upgrade did not print the env path');
     assert(countToken(again.stdout, stubToken) === 0, 'upgrade generated a token while one was supplied');
     const keptKiosk = fs.readFileSync(kept + '.kiosk', 'utf8');
     assert(keptKiosk.includes('PORT=9090') && keptKiosk.includes('HOST=0.0.0.0'), 'kiosk settings were not refreshed');
@@ -496,7 +534,8 @@ function countToken(text, secret) {
     const missingText = fs.readFileSync(missing, 'utf8');
     assert(missingText.split('\n').includes('HOST=192.0.2.10'), 'append rewrote HOST');
     assert(missingText.includes('AUTH_TOKEN=' + stubToken), 'append did not generate a token');
-    assert(countToken(appended.stdout, stubToken) === 1, 'appended token printed ' + countToken(appended.stdout, stubToken) + ' times');
+    assert(countToken(appended.stdout, stubToken) === 0, 'appended token printed ' + countToken(appended.stdout, stubToken) + ' times');
+    assert(appended.stdout.includes(missing), 'non-interactive append did not print the env path');
     assert((fs.statSync(missing).mode & 0o777) === 0o600, 'append mode was not 0600');
 
     const stable = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
@@ -528,13 +567,67 @@ function countToken(text, secret) {
     assert(!fs.existsSync(bad), 'unsafe token created an env file');
     assert(!refused.stdout.includes('fake token') && !refused.stderr.includes('fake token'), 'refused token was printed');
 
+    const shortFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
+    const shortRun = dry(shortFile, {AUTH_TOKEN: 'short-token'});
+    assert(shortRun.status !== 0, 'short token was stored');
+    assert(!fs.existsSync(shortFile), 'short token created an env file');
+    assert(!shortRun.stdout.includes('short-token') && !shortRun.stderr.includes('short-token'), 'short token was printed');
+
+    const ttyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
+    const tty = runPty({
+      KANBAN_INSTALL_DRY_RUN: '1',
+      KANBAN_ENV_FILE: ttyFile,
+      AUTH_TOKEN: TOKEN,
+      PATH: process.env.PATH
+    });
+    assert(tty.status === 0, 'interactive dry-run failed');
+    assert(countToken(tty.stdout, TOKEN) === 1, 'interactive token printed ' + countToken(tty.stdout, TOKEN) + ' times');
+    assert(!tty.stderr.includes(TOKEN), 'interactive token leaked on stderr');
+
     const rootOnly = runs([script], {KANBAN_INSTALL_DRY_RUN: '1'});
     assert(rootOnly.status !== 0, 'dry-run without a temp path was allowed');
   });
 
+  await check('login and repeated 401s are rate limited', async () => {
+    const loginPort = await freePort();
+    const loginSrv = startServer({AUTH_TOKEN: TOKEN}, loginPort);
+    try {
+      await loginSrv.ready;
+      for (let i = 0; i < LOGIN_MAX; i++) {
+        const res = await request(loginPort, 'POST', '/login', {body: 'nope'});
+        assert(res.status === 401, 'login attempt ' + i + ' status ' + res.status);
+      }
+      const blocked = await request(loginPort, 'POST', '/login', {body: TOKEN});
+      assert(blocked.status === 429 && blocked.body === '{"error":"too many requests"}', 'login rate status ' + blocked.status);
+      assert(!blocked.headers['set-cookie'], 'rate limited login set a cookie');
+      const still = await request(loginPort, 'GET', '/healthz', {headers: {Authorization: 'Bearer ' + TOKEN}});
+      assert(still.status === 200, 'bearer blocked by the login limit');
+    } finally {
+      await stopServer(loginSrv);
+      fs.rmSync(loginSrv.dir, {recursive: true, force: true});
+    }
+    const denyPort = await freePort();
+    const denySrv = startServer({AUTH_TOKEN: TOKEN}, denyPort);
+    try {
+      await denySrv.ready;
+      for (let i = 0; i < DENY_MAX; i++) {
+        const res = await request(denyPort, 'GET', '/api/board');
+        assert(res.status === 401, 'denied attempt ' + i + ' status ' + res.status);
+      }
+      const blocked = await request(denyPort, 'GET', '/healthz');
+      assert(blocked.status === 429 && blocked.body === '{"error":"too many requests"}', '401 rate status ' + blocked.status);
+      const ok = await request(denyPort, 'GET', '/healthz', {headers: {Authorization: 'Bearer ' + TOKEN}});
+      assert(ok.status === 200, 'bearer blocked by the 401 limit');
+    } finally {
+      await stopServer(denySrv);
+      fs.rmSync(denySrv.dir, {recursive: true, force: true});
+    }
+  });
+
   await check('docs and client keep the token out of the query and the example config', async () => {
     const example = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.example.json'), 'utf8'));
-    assert(example.AUTH_TOKEN === 'replace-me', 'example token is not a placeholder');
+    assert(example.AUTH_TOKEN === 'replace-me-with-a-long-random-token', 'example token is not a placeholder');
+    assert(example.AUTH_TOKEN.length >= MIN_TOKEN_CHARS, 'example placeholder is shorter than the server allows');
     assert(example.HOST === '127.0.0.1', 'example host is not loopback');
     assert(!JSON.stringify(example).includes(TOKEN), 'example config contained the test token');
     const ignore = fs.readFileSync(path.join(ROOT, '..', '.gitignore'), 'utf8');

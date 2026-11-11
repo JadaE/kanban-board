@@ -1,7 +1,7 @@
 /* Clean screenshots for the README: fresh board, a couple of example cards. node test/shots.js */
 const {chromium}=require(process.env.PW||'playwright-core');const {spawn}=require('child_process');const fs=require('fs');const path=require('path');
 const ROOT=path.resolve(__dirname,'..');const PORT='8095';const DATA=fs.mkdtempSync('/tmp/kanban-shots-');const BASE=`http://localhost:${PORT}/`;const S=f=>path.join(ROOT,'screenshots',f);
-const TOKEN='fake-test-token';
+const TOKEN='fake-test-token-not-a-secret-xxx';
 (async()=>{const srv=spawn(process.execPath,[path.join(ROOT,'server.js')],{env:{...process.env,PORT,HOST:'127.0.0.1',DATA_DIR:DATA,AUTH_TOKEN:TOKEN}});await new Promise(r=>srv.stdout.on('data',d=>/on http/.test(d)&&r()));
 const b=await chromium.launch({executablePath:'/usr/bin/google-chrome',args:['--no-sandbox']});
 const live=p=>p.waitForFunction(()=>window.__kanban&&window.__kanban.store.debug().status==='live');

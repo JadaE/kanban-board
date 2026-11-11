@@ -4,7 +4,7 @@
 const {chromium}=require(process.env.PW||'playwright-core');
 const {spawn,execSync,spawnSync}=require('child_process');const fs=require('fs');const path=require('path');const http=require('http');
 const ROOT=path.resolve(__dirname,'..');const PORT='8097';const DATA=fs.mkdtempSync('/tmp/kanban-mem-');const DUR=+(process.env.DUR||60);
-const TOKEN='fake-test-token';
+const TOKEN='fake-test-token-not-a-secret-xxx';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const api=(m,p,b)=>new Promise((res,rej)=>{const d=b?JSON.stringify(b):'';const r=http.request(`http://localhost:${PORT}${p}`,{method:m,headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(d),'Authorization':'Bearer '+TOKEN}},s=>{let x='';s.on('data',c=>x+=c);s.on('end',()=>res(x));});r.on('error',rej);r.end(d);});
 const kb=pid=>{try{return +fs.readFileSync(`/proc/${pid}/status`,'utf8').match(/VmRSS:\s+(\d+)/)[1];}catch(_){return 0;}};
