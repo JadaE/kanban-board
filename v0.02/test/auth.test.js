@@ -278,8 +278,7 @@ function countToken(text, secret) {
         ['PUT', '/api/card/c1', JSON.stringify(board)],
         ['DELETE', '/api/card/c1', JSON.stringify({updatedAt: 11})],
         ['PUT', '/api/meta', JSON.stringify({tagColors: {}, updatedAt: 1})],
-        ['GET', '/healthz'],
-        ['GET', '/sw.js']
+        ['GET', '/healthz']
       ];
       for (const [method, reqPath, body] of paths) {
         const res = await request(port, method, reqPath, {body, headers: body ? {'Content-Type': 'application/json'} : {}});
@@ -301,6 +300,13 @@ function countToken(text, secret) {
       const htmlHealth = await request(port, 'GET', '/healthz', {headers: {Accept: 'text/html'}});
       assert(htmlApi.status === 401 && htmlApi.body === UNAUTHORIZED, 'API document redirect');
       assert(htmlHealth.status === 401 && htmlHealth.body === UNAUTHORIZED, 'health document redirect');
+      for (const method of ['GET', 'HEAD']) {
+        const asset = await request(port, method, '/sw.js');
+        assert(asset.status === 302, method + ' /sw.js status ' + asset.status);
+        const assetNext = new URL(asset.headers.location || '/login', 'http://127.0.0.1').searchParams.get('next');
+        assert(assetNext === '/sw.js', method + ' /sw.js next was not the asset path');
+        if (method === 'HEAD') assert(asset.body === '', 'HEAD /sw.js sent a body');
+      }
     });
 
     await check('wrong header and wrong cookie share the missing-token body', async () => {
@@ -482,7 +488,7 @@ function countToken(text, secret) {
     assert(freshText.includes('http://localhost:8080/login?next=/?tv=1'), 'TV URL is not the sign-in page');
     assert((fs.statSync(fresh).mode & 0o777) === 0o600, 'new env mode ' + (fs.statSync(fresh).mode & 0o777).toString(8));
     assert(countToken(created.stdout, TOKEN) === 0, 'token printed ' + countToken(created.stdout, TOKEN) + ' times');
-    assert(created.stdout.includes(fresh), 'non-interactive install did not print the env path');
+    assert(created.stdout.includes('A token was written to ' + fresh + ' (mode 0600).'), 'non-interactive install did not name the env file');
     assert(!created.stderr.includes(TOKEN), 'token printed on stderr');
     assert(!/http:\/\/\d+\.\d+\.\d+\.\d+/.test(created.stdout), 'loopback install advertised a network URL');
     assert(!created.stdout.includes(stubToken) && !created.stderr.includes(stubToken), 'generator ran when a token was supplied');
@@ -491,6 +497,8 @@ function countToken(text, secret) {
     assert(freshKiosk.includes('PORT=8080') && freshKiosk.includes('HOST=127.0.0.1'), 'kiosk settings missing port or host');
     assert(freshKiosk.includes('http://localhost:8080/login?next=/?tv=1'), 'kiosk URL is not the sign-in page');
     assert(!freshKiosk.includes('AUTH_TOKEN') && !freshKiosk.includes(TOKEN), 'kiosk settings contain a token');
+    const kioskUrl = freshKiosk.split('\n').find(line => line.startsWith('KIOSK_URL=')) || '';
+    assert(kioskUrl.includes('/login?next=/?tv=1') && !/token=/i.test(kioskUrl), 'kiosk URL contains a token');
 
     const generatedFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kanban-env-')), 'kanban.env');
     const generated = dry(generatedFile, {});
@@ -582,7 +590,13 @@ function countToken(text, secret) {
     });
     assert(tty.status === 0, 'interactive dry-run failed');
     assert(countToken(tty.stdout, TOKEN) === 1, 'interactive token printed ' + countToken(tty.stdout, TOKEN) + ' times');
+    assert(tty.stdout.includes('shown once'), 'interactive install did not show the token line');
     assert(!tty.stderr.includes(TOKEN), 'interactive token leaked on stderr');
+    for (const file of ['pi/install.sh', 'pi/watchdog.sh', 'pi/kiosk.sh']) {
+      const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+      assert(!/curl[^\n]*(Bearer|AUTH_TOKEN|KANBAN_TOKEN|\$token|\$TOKEN)/.test(text), file + ' passes a token to curl');
+      assert(!/ExecStart=[^\n]*(AUTH_TOKEN|KANBAN_TOKEN|\$token|\$TOKEN)/.test(text), file + ' passes a token to ExecStart');
+    }
 
     const rootOnly = runs([script], {KANBAN_INSTALL_DRY_RUN: '1'});
     assert(rootOnly.status !== 0, 'dry-run without a temp path was allowed');

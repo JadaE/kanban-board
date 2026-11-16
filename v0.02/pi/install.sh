@@ -61,7 +61,7 @@ pick_token() {
   case "$token" in
     ''|*[!A-Za-z0-9_-]*) die "Refusing to store an empty or non-plain AUTH_TOKEN" ;;
   esac
-  if [ "${#token}" -lt 32 ]; then die "Refusing to store a short AUTH_TOKEN"; fi
+  if [ "${#token}" -lt 16 ]; then die "Refusing to store a short AUTH_TOKEN"; fi
   printf '%s' "$token"
 }
 
@@ -70,7 +70,7 @@ print_new_token() {
   if [ -t 1 ]; then
     printf '%s\n' "AUTH_TOKEN (shown once; store it; it will not be printed again): ${1}"
   else
-    printf '%s\n' "$ENV_FILE"
+    printf '%s\n' "A token was written to ${ENV_FILE} (mode 0600)."
   fi
 }
 
@@ -174,6 +174,7 @@ curl_auth() {
   [ -n "$token" ] || return 1
   cfg="$(mktemp)"
   chmod 600 "$cfg"
+  # printf is a shell builtin, so the token is not an argument of curl or any other process.
   printf 'header = "Authorization: Bearer %s"\n' "$token" > "$cfg"
   curl --config "$cfg" -fsS -m 2 -o /dev/null "$url" && rc=0 || rc=$?
   rm -f "$cfg"

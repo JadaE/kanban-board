@@ -25,7 +25,7 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 const DEFAULT_HOST = '127.0.0.1';
 const HOST = process.env.HOST || DEFAULT_HOST;
 const MAX_TOKEN_CHARS = 256;
-const MIN_TOKEN_CHARS = 32;
+const MIN_TOKEN_CHARS = 16;
 const LOGIN_BODY_MAX = 4096;
 const LOGIN_WINDOW_MS = 60 * 1000;
 const LOGIN_MAX = 24;
@@ -447,7 +447,8 @@ async function handle(req, res) {
 
   if (p === '/login' && (m === 'GET' || m === 'HEAD' || m === 'POST')) return handleLogin(req, res, m, url);
   if (!requestAuthorized(req)) {
-    if ((m === 'GET' || m === 'HEAD') && (p === '/' || p === '/index.html')) return redirectToLogin(res, url);
+    const apiOrHealth = p === '/healthz' || p === '/api' || p.startsWith('/api/');
+    if ((m === 'GET' || m === 'HEAD') && !apiOrHealth) return redirectToLogin(res, url);
     return unauthorized(req, res);
   }
 

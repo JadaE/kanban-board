@@ -26,6 +26,7 @@ if [ -z "$TOKEN" ]; then
 else
   cfg="$(mktemp)"
   chmod 600 "$cfg"
+  # printf is a shell builtin, so the token is not an argument of curl or any other process.
   printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" > "$cfg"
   curl --config "$cfg" -fsS -m 5 -o /dev/null "http://$HEALTH_HOST:$PORT/healthz" || healthy=0
   rm -f "$cfg"
