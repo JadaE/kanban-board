@@ -1,0 +1,11 @@
+{
+  "_comment": "Placeholders only. The server reads environment variables, not this file. Copy to config.local.json (gitignored) for local notes. Never put a real token here.",
+  "PORT": "8080",
+  "HOST": "127.0.0.1",
+  "AUTH_TOKEN": "replace-me-with-a-long-random-token",
+  "DATA_DIR": "./data",
+  "BACKUPS": "30",
+  "BACKUP_MIN_INTERVAL_S": "300",
+  "TOMBSTONE_DAYS": "60",
+  "PING_S": "15"
+}

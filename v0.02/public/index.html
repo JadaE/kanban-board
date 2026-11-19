@@ -190,7 +190,7 @@ h1 .ver{font-size:11px;font-weight:500;color:var(--muted);vertical-align:middle}
 <dialog id="whoDlg">
   <form class="dlg" method="dialog">
     <div style="font-size:20px;font-weight:700">Who are you?</div>
-    <div style="color:var(--muted);font-size:14px">This only sets who is using this phone or computer. New cards default to you, and edits show your name. No login, and you can switch anytime from the chip at the top.</div>
+    <div style="color:var(--muted);font-size:14px">This only sets who is using this phone or computer. New cards default to you, and edits show your name. It is not the board token, and you can switch anytime from the chip at the top.</div>
     <div class="who"><button type="button" data-who="persona">🌸<br>Person A</button><button type="button" data-who="personb">🧢<br>Person B</button></div>
   </form>
 </dialog>
@@ -280,7 +280,8 @@ const ServerStore=(function(){
     hasData=true;persist();emit();setStatus(status);flush();
   }
   async function req(method,url,body){
-    const r=await fetch(url,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+    const r=await fetch(url,{method,credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+    if(r.status===401){if(location.pathname!=='/login'){const next=(location.pathname||'/')+location.search;location.assign('/login?next='+encodeURIComponent(next.charAt(0)==='/'?next:'/'));}throw new Error('unauthorized');}
     let j=null;try{j=await r.json();}catch(_){}
     return {status:r.status,ok:r.ok,json:j};
   }

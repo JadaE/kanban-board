@@ -33,6 +33,6 @@ if [ -d "$APP/data" ] && [ "$PURGE" -eq 0 ]; then
   echo "==> Your board data was saved to $dest"
 fi
 rm -rf "$APP"
-rm -f /etc/kanban.env /run/kanban-watchdog.fails
+rm -f /etc/kanban.env /etc/kanban-kiosk.env /run/kanban-watchdog.fails
 id kanban >/dev/null 2>&1 && userdel kanban 2>/dev/null || true
 echo "==> Removed. (Screen blanking and desktop autologin were left as they are; change them in raspi-config if you like.)"
